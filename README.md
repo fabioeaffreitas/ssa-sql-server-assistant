@@ -174,3 +174,47 @@ SSA is an experimental engineering project intended for learning, research, and 
 
 \*\*Built as a practical exploration of Generative AI, SQL Server, and data engineering.\*\*
 
+
+
+\## Testing
+
+
+
+\### Deterministic regression tests
+
+
+
+Run the regression suite without requiring Ollama:
+
+
+
+```powershell
+
+python -m pytest tests/test\_sql\_patterns.py tests/test\_sql\_validator.py tests/test\_sql\_schema\_validator.py tests/test\_sql\_executor.py tests/test\_assistant.py -v
+
+```
+
+
+
+\### SQL generation evaluation
+
+
+
+Run live SQL generation tests using the configured local Ollama model:
+
+
+
+```powershell
+
+python -m pytest tests/test\_sql\_generation\_eval.py -v
+
+```
+
+
+
+The evaluation tests call the language model and may take several minutes. Results can vary between runs because SQL generation is probabilistic.
+
+
+
+
+
