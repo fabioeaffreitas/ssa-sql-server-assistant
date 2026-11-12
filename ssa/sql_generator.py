@@ -39,6 +39,10 @@ Rules:
 - Do not invent table names or column names.
 - Prefer current-state tables over history tables when the question asks
   for current values.
+- For total sales including tax and freight, use SalesOrderHeader.TotalDue.
+- For sales before tax and freight, use SalesOrderHeader.SubTotal.
+- Do not use SubTotal when the question explicitly asks for total sales including tax and freight.
+- When aggregating sales by customer, group by CustomerID.
 - Use history tables only when the question explicitly asks about
   historical changes, previous values, or trends over time.
 - Avoid unnecessary JOINs.
