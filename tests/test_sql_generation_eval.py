@@ -13,7 +13,7 @@ EVALUATION_CASES = [
     {
         "question": "Show the top 10 customers by total sales.",
         "expected": ["CustomerID", "TotalDue", "GROUP BY"],
-        "forbidden": ["Sales.Customer"],
+        "forbidden": ["Sales.Customer", "SubTotal"],
     },
     {
         "question": "Show total sales before tax and freight by customer.",
@@ -24,6 +24,16 @@ EVALUATION_CASES = [
         "question": "Show total sales including tax and freight by customer.",
         "expected": ["CustomerID", "TotalDue", "GROUP BY"],
         "forbidden": ["SubTotal"],
+    },
+    {
+        "question": "Show the 10 most expensive products by list price.",
+        "expected": ["Product", "ListPrice", "TOP"],
+        "forbidden": [],
+    },
+    {
+        "question": "Show the number of sales orders per customer.",
+        "expected": ["CustomerID", "COUNT", "GROUP BY"],
+        "forbidden": [],
     },
 ]
 
