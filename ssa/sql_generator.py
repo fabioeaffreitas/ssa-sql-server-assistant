@@ -44,6 +44,8 @@ Rules:
 - Avoid unnecessary JOINs.
 - Do not JOIN tables unless the requested information requires it.
 - Generate SELECT queries only.
+- In SQL Server, TOP must appear immediately after SELECT, e.g. SELECT TOP 10 ...
+- Never place TOP at the end of a query.
 - Never generate INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, or TRUNCATE.
 - Use SQL Server T-SQL syntax.
 - Use TOP instead of LIMIT.

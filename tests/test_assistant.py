@@ -3,11 +3,13 @@ from ssa import assistant
 
 def test_ask_success(monkeypatch):
     expected_sql = "SELECT 1"
+
     expected_result = {
-        "columns": ["value"],
-        "rows": [{"value": 1}],
-        "row_count": 1,
-        "max_rows": 100,
+    	"columns": ["value"],
+    	"rows": [{"value": 1}],
+    	"row_count": 1,
+    	"max_rows": 100,
+    	"truncated": False,
     }
 
     monkeypatch.setattr(

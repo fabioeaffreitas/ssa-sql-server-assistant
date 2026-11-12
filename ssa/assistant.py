@@ -29,7 +29,17 @@ def ask(question: str) -> dict:
         for row in result["rows"]:
             print(row)
 
-        print(f"\nReturned rows: {result['row_count']}")
+        print("\nRESULT SUMMARY:")
+        print(f"Returned rows: {result['row_count']}")
+        print(f"Maximum rows: {result['max_rows']}")
+
+        if result["truncated"]:
+            print(
+                f"WARNING: Results truncated. "
+                f"More than {result['max_rows']} rows are available."
+            )
+        else:
+            print("Results complete: no additional rows detected.")
 
         return {
             "question": question,
