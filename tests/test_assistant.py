@@ -1,3 +1,4 @@
+
 from ssa import assistant
 
 
@@ -5,11 +6,11 @@ def test_ask_success(monkeypatch):
     expected_sql = "SELECT 1"
 
     expected_result = {
-    	"columns": ["value"],
-    	"rows": [{"value": 1}],
-    	"row_count": 1,
-    	"max_rows": 100,
-    	"truncated": False,
+        "columns": ["value"],
+        "rows": [{"value": 1}],
+        "row_count": 1,
+        "max_rows": 100,
+        "truncated": False,
     }
 
     monkeypatch.setattr(
@@ -29,8 +30,19 @@ def test_ask_success(monkeypatch):
     assert response["success"] is True
     assert response["question"] == "Test question"
     assert response["sql"] == expected_sql
+    assert response["generation"] == {
+        "success": True,
+    }
+    assert response["validation"] == {
+        "syntax": True,
+        "schema": True,
+        "success": True,
+    }
+    assert response["execution"] == {
+        "success": True,
+    }
     assert response["result"] == expected_result
-    assert response["error"] if "error" in response else True
+    assert "error" not in response
 
 
 def test_ask_validation_error(monkeypatch):
@@ -53,5 +65,43 @@ def test_ask_validation_error(monkeypatch):
 
     assert response["success"] is False
     assert response["sql"] is None
+    assert response["generation"] == {
+        "success": True,
+    }
+    assert response["validation"] == {
+        "syntax": False,
+        "schema": False,
+        "success": False,
+    }
+    assert response["execution"] == {
+        "success": False,
+    }
     assert response["result"] is None
+    assert response["error_stage"] == "validation"
     assert "Invalid column" in response["error"]
+
+
+def test_ask_generation_error(monkeypatch):
+    def fake_generate(question):
+        raise RuntimeError("Model unavailable")
+
+    monkeypatch.setattr(
+        assistant,
+        "generate_sql",
+        fake_generate,
+    )
+
+    response = assistant.ask("Test generation failure")
+
+    assert response["success"] is False
+    assert response["sql"] is None
+    assert response["generation"] == {
+        "success": False,
+    }
+    assert response["validation"] is None
+    assert response["execution"] == {
+        "success": False,
+    }
+    assert response["result"] is None
+    assert response["error_stage"] == "execution_or_generation"
+    assert "Model unavailable" in response["error"]

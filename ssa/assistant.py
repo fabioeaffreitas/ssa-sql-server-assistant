@@ -7,6 +7,7 @@ Natural language -> schema -> SQL -> validation -> execution -> results.
 from ssa.sql_generator import generate_sql
 from ssa.sql_executor import execute_sql
 from ssa.sql_validator import SQLValidationError
+from ssa.sql_schema_validator import validate_sql_schema
 
 
 def ask(question: str) -> dict:
@@ -22,8 +23,13 @@ def ask(question: str) -> dict:
         print("\nGENERATED SQL:")
         print(sql)
 
-        print("\nVALIDATING AND EXECUTING SQL...")
-        result = execute_sql(sql)
+        print("\nVALIDATING SQL SYNTAX AND DATABASE SCHEMA...")
+        validated_sql = validate_sql_schema(sql)
+
+        print("\nSQL VALIDATION SUCCESSFUL.")
+
+        print("\nEXECUTING SQL...")
+        result = execute_sql(validated_sql)
 
         print("\nRESULTS:")
         for row in result["rows"]:
@@ -43,7 +49,18 @@ def ask(question: str) -> dict:
 
         return {
             "question": question,
-            "sql": sql,
+            "sql": validated_sql,
+            "generation": {
+                "success": True,
+            },
+            "validation": {
+                "syntax": True,
+                "schema": True,
+                "success": True,
+            },
+            "execution": {
+                "success": True,
+            },
             "result": result,
             "success": True,
         }
@@ -54,8 +71,20 @@ def ask(question: str) -> dict:
         return {
             "question": question,
             "sql": None,
+            "generation": {
+                "success": True,
+            },
+            "validation": {
+                "syntax": False,
+                "schema": False,
+                "success": False,
+            },
+            "execution": {
+                "success": False,
+            },
             "result": None,
             "success": False,
+            "error_stage": "validation",
             "error": str(exc),
         }
 
@@ -65,8 +94,16 @@ def ask(question: str) -> dict:
         return {
             "question": question,
             "sql": None,
+            "generation": {
+                "success": False,
+            },
+            "validation": None,
+            "execution": {
+                "success": False,
+            },
             "result": None,
             "success": False,
+            "error_stage": "execution_or_generation",
             "error": str(exc),
         }
 
