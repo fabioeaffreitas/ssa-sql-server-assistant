@@ -1,11 +1,11 @@
 
 """
 SSA - SQL Executor
-Executes validated SQL and returns query results.
+Executes schema-validated SQL and returns query results.
 """
 
 from ssa.db import get_connection
-from ssa.sql_validator import validate_sql
+from ssa.sql_schema_validator import validate_sql_schema
 
 
 MAX_ROWS = 100
@@ -13,12 +13,11 @@ MAX_ROWS = 100
 
 def execute_sql(sql: str, max_rows: int = MAX_ROWS) -> dict:
     """
-    Execute validated SQL and return columns and rows.
-
-    Database permissions must enforce read-only access.
+    Validate SQL against database metadata and execute it.
     """
 
-    validated_sql = validate_sql(sql)
+    # Validate SQL syntax, safety, tables, and columns first.
+    validated_sql = validate_sql_schema(sql)
 
     connection = get_connection()
 
