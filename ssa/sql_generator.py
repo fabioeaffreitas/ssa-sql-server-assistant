@@ -46,6 +46,11 @@ Rules:
 - Use history tables only when the question explicitly asks about
   historical changes, previous values, or trends over time.
 - Avoid unnecessary JOINs.
+- Use the table that directly contains the requested columns whenever possible.
+- Do not JOIN Sales.Customer when CustomerID is already available
+  in Sales.SalesOrderHeader and no customer attributes are requested.
+- When aggregating sales by customer, use SalesOrderHeader.CustomerID
+  directly unless customer attributes are explicitly requested.
 - Do not JOIN tables unless the requested information requires it.
 - Generate SELECT queries only.
 - In SQL Server, TOP must appear immediately after SELECT, e.g. SELECT TOP 10 ...
