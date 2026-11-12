@@ -1,0 +1,18 @@
+
+# Database connectivity
+pyodbc
+
+# Environment configuration
+python-dotenv
+
+# Local LLM integration
+ollama
+
+# Data validation
+pydantic
+
+# SQL parsing and validation
+sqlglot
+
+# Logging and terminal output
+rich
