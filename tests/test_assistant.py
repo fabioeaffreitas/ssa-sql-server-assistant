@@ -52,13 +52,12 @@ def test_ask_validation_error(monkeypatch):
         lambda question: "SELECT CustomerName FROM Sales.Customer",
     )
 
-    def fake_execute(sql):
-        raise assistant.SQLValidationError("Invalid column")
-
     monkeypatch.setattr(
         assistant,
         "execute_sql",
-        fake_execute,
+        lambda sql: (_ for _ in ()).throw(
+            assistant.SQLValidationError("Invalid column")
+        ),
     )
 
     response = assistant.ask("Test invalid query")
@@ -105,3 +104,33 @@ def test_ask_generation_error(monkeypatch):
     assert response["result"] is None
     assert response["error_stage"] == "execution_or_generation"
     assert "Model unavailable" in response["error"]
+
+
+def test_ask_reports_execution_timeout_after_validation(monkeypatch):
+    monkeypatch.setattr(
+        assistant,
+        "generate_sql",
+        lambda question: "SELECT 1",
+    )
+
+    monkeypatch.setattr(
+        assistant,
+        "execute_sql",
+        lambda sql: (_ for _ in ()).throw(
+            assistant.SQLQueryTimeoutError("SQL query timed out.")
+        ),
+    )
+
+    response = assistant.ask("Test timeout")
+
+    assert response["success"] is False
+    assert response["validation"] == {
+        "syntax": True,
+        "schema": True,
+        "success": True,
+    }
+    assert response["execution"] == {
+        "success": False,
+        "error_type": "timeout",
+    }
+    assert response["error_stage"] == "execution"

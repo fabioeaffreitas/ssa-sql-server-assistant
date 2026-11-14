@@ -1,5 +1,6 @@
 
 import pytest
+import pyodbc
 
 import ssa.sql_executor as executor
 
@@ -36,10 +37,12 @@ def test_rejects_negative_max_rows():
 
 
 def test_result_truncation(monkeypatch):
+    validation_calls = []
+
     monkeypatch.setattr(
         executor,
         "validate_sql_schema",
-        lambda sql: sql,
+        lambda sql, query_timeout: validation_calls.append((sql, query_timeout)) or sql,
     )
 
     monkeypatch.setattr(
@@ -57,6 +60,7 @@ def test_result_truncation(monkeypatch):
     ]
     assert result["truncated"] is True
     assert result["max_rows"] == 2
+    assert validation_calls == [("SELECT ProductID", 30)]
 
 
 def test_result_not_truncated(monkeypatch):
@@ -71,7 +75,7 @@ def test_result_not_truncated(monkeypatch):
     monkeypatch.setattr(
         executor,
         "validate_sql_schema",
-        lambda sql: sql,
+        lambda sql, query_timeout: sql,
     )
 
     monkeypatch.setattr(
@@ -84,3 +88,47 @@ def test_result_not_truncated(monkeypatch):
 
     assert result["row_count"] == 2
     assert result["truncated"] is False
+
+
+@pytest.mark.parametrize(
+    ("driver_error", "error_type"),
+    [
+        (pyodbc.OperationalError("HYT00", "Query timeout expired"), executor.SQLQueryTimeoutError),
+        (pyodbc.OperationalError("HY008", "Operation canceled"), executor.SQLQueryCancelledError),
+        (pyodbc.ProgrammingError("42000", "Syntax error"), executor.SQLExecutionError),
+    ],
+)
+def test_classifies_execution_driver_errors(monkeypatch, driver_error, error_type):
+    class FailingCursor(FakeCursor):
+        def execute(self, sql):
+            raise driver_error
+
+    class FailingConnection(FakeConnection):
+        def cursor(self):
+            return FailingCursor()
+
+    monkeypatch.setattr(
+        executor,
+        "validate_sql_schema",
+        lambda sql, query_timeout: sql,
+    )
+    monkeypatch.setattr(executor, "get_connection", lambda: FailingConnection())
+
+    with pytest.raises(error_type):
+        executor.execute_sql("SELECT ProductID")
+
+
+def test_wraps_execution_connection_error(monkeypatch):
+    monkeypatch.setattr(
+        executor,
+        "validate_sql_schema",
+        lambda sql, query_timeout: sql,
+    )
+
+    def fail_connection():
+        raise executor.DatabaseConnectionError("connection unavailable")
+
+    monkeypatch.setattr(executor, "get_connection", fail_connection)
+
+    with pytest.raises(executor.SQLExecutionConnectionError):
+        executor.execute_sql("SELECT ProductID")

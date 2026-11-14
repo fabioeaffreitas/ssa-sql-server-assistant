@@ -66,6 +66,23 @@ def search_schema(question, n_results=5):
         if "sales order" in question_lower and "salesorder" in object_name:
             name_boost = 0.20
 
+                # Customer name relevance
+        if any(term in question_lower for term in [
+            "customer name",
+            "customer names",
+            "customers by name",
+            "including their names",
+            "with their names",
+        ]):
+            if object_name == "sales.customer":
+                name_boost = 0.40
+            elif object_name == "person.person":
+                name_boost = 0.40
+            elif object_name == "sales.store":
+                name_boost = 0.40
+            elif object_name == "sales.salesorderheader":
+                name_boost = 0.40
+
         # Product list price relevance
         if (
             "product" in question_lower

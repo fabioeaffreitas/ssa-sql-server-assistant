@@ -179,40 +179,31 @@ SSA is an experimental engineering project intended for learning, research, and 
 \## Testing
 
 
+\### Unit tests (CI-safe)
 
-\### Deterministic regression tests
-
-
-
-Run the regression suite without requiring Ollama:
-
-
+The default suite has no SQL Server or Ollama dependency:
 
 ```powershell
-
-python -m pytest tests/test\_sql\_patterns.py tests/test\_sql\_validator.py tests/test\_sql\_schema\_validator.py tests/test\_sql\_executor.py tests/test\_assistant.py -v
-
+python -m pytest
 ```
 
+\### Integration tests
 
-
-\### SQL generation evaluation
-
-
-
-Run live SQL generation tests using the configured local Ollama model:
-
-
+These tests require the configured local services. The schema tests require SQL Server; SQL generation evaluation requires Ollama and the local schema index:
 
 ```powershell
-
-python -m pytest tests/test\_sql\_generation\_eval.py -v
-
+python -m pytest -m integration
 ```
 
+\### Live end-to-end evaluation
 
+Run the 14-question SQL generation, validation, and execution evaluation explicitly. It requires both SQL Server and Ollama and writes a timestamped CSV report to `reports/`:
 
-The evaluation tests call the language model and may take several minutes. Results can vary between runs because SQL generation is probabilistic.
+```powershell
+python scripts/run_live_sql_eval.py
+```
+
+Manual diagnostics are in `scripts/` and are intentionally outside pytest discovery.
 
 
 

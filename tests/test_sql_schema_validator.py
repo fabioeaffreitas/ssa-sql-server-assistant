@@ -4,6 +4,9 @@ from ssa.sql_schema_validator import validate_sql_schema
 from ssa.sql_validator import SQLValidationError
 
 
+pytestmark = pytest.mark.integration
+
+
 def test_accepts_valid_column():
     sql = "SELECT TOP 10 ProductID FROM Production.Product"
 

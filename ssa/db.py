@@ -11,8 +11,54 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DEFAULT_CONNECTION_TIMEOUT = 10
+DEFAULT_QUERY_TIMEOUT = 30
 
-def get_connection():
+
+class DatabaseConnectionError(RuntimeError):
+    """Raised when a connection to SQL Server cannot be established."""
+
+
+def _resolve_timeout(value: int | None, environment_name: str, default: int) -> int:
+    """Return a positive timeout from an explicit value or environment setting."""
+
+    if value is None:
+        value = os.getenv(environment_name, str(default))
+
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{environment_name} must be a positive integer.") from exc
+
+    if timeout < 1:
+        raise ValueError(f"{environment_name} must be a positive integer.")
+
+    return timeout
+
+
+def get_connection_timeout(connection_timeout: int | None = None) -> int:
+    """Return the configured SQL Server connection timeout in seconds."""
+
+    return _resolve_timeout(
+        connection_timeout,
+        "SQL_CONNECTION_TIMEOUT",
+        DEFAULT_CONNECTION_TIMEOUT,
+    )
+
+
+def get_query_timeout(query_timeout: int | None = None) -> int:
+    """Return the configured SQL Server query timeout in seconds."""
+
+    return _resolve_timeout(
+        query_timeout,
+        "SQL_QUERY_TIMEOUT",
+        DEFAULT_QUERY_TIMEOUT,
+    )
+
+
+def get_connection(connection_timeout: int | None = None):
+    """Open a SQL Server connection with a bounded connection timeout."""
+
     server = os.getenv("SQL_SERVER", "localhost")
     database = os.getenv("SQL_DATABASE", "AdventureWorks2025")
     driver = os.getenv(
@@ -54,4 +100,11 @@ def get_connection():
             f"PWD={password};"
         )
 
-    return pyodbc.connect(connection_string)
+    timeout = get_connection_timeout(connection_timeout)
+
+    try:
+        return pyodbc.connect(connection_string, timeout=timeout)
+    except pyodbc.Error as exc:
+        raise DatabaseConnectionError(
+            f"SQL Server connection failed after {timeout} seconds."
+        ) from exc

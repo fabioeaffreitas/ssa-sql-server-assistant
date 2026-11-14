@@ -4,21 +4,23 @@ SSA - SQL Schema Validator
 Validates SQL table and column references against database metadata.
 """
 
-from ssa.db import get_connection
+from ssa.db import get_connection, get_query_timeout
 from ssa.sql_validator import validate_sql, SQLValidationError
 
 
-def validate_sql_schema(sql: str) -> str:
+def validate_sql_schema(sql: str, query_timeout: int | None = None) -> str:
     """
     Validate SQL syntax and referenced tables against SQL Server metadata.
     """
 
     validated_sql = validate_sql(sql)
 
+    timeout = get_query_timeout(query_timeout)
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
+        cursor.timeout = timeout
 
         # Ask SQL Server to compile the query without executing it.
         cursor.execute(
@@ -45,8 +47,10 @@ def validate_sql_schema(sql: str) -> str:
         ) from exc
 
     finally:
-        connection.rollback()
-        connection.close()
+        try:
+            connection.rollback()
+        finally:
+            connection.close()
 
 
 if __name__ == "__main__":

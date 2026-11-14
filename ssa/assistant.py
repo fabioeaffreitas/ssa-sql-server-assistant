@@ -5,9 +5,14 @@ Natural language -> schema -> SQL -> validation -> execution -> results.
 """
 
 from ssa.sql_generator import generate_sql
-from ssa.sql_executor import execute_sql
+from ssa.sql_executor import (
+    SQLExecutionError,
+    SQLQueryCancelledError,
+    SQLQueryTimeoutError,
+    execute_sql,
+)
 from ssa.sql_validator import SQLValidationError
-from ssa.sql_schema_validator import validate_sql_schema
+from ssa.db import DatabaseConnectionError
 
 
 def ask(question: str) -> dict:
@@ -16,20 +21,31 @@ def ask(question: str) -> dict:
     print("\nQUESTION:")
     print(question)
 
+    token_usage = None
+    generation_succeeded = False
+
     try:
         print("\nGENERATING SQL...")
-        sql = generate_sql(question)
+        # ``return_usage`` lets the UI show Ollama's actual token accounting.
+        # The fallback keeps compatibility with older/test doubles of generate_sql.
+        try:
+            generated = generate_sql(question, return_usage=True)
+        except TypeError as exc:
+            if "return_usage" not in str(exc):
+                raise
+            generated = generate_sql(question)
+
+        if isinstance(generated, tuple):
+            sql, token_usage = generated
+        else:
+            sql, token_usage = generated, None
+        generation_succeeded = True
 
         print("\nGENERATED SQL:")
         print(sql)
 
-        print("\nVALIDATING SQL SYNTAX AND DATABASE SCHEMA...")
-        validated_sql = validate_sql_schema(sql)
-
-        print("\nSQL VALIDATION SUCCESSFUL.")
-
-        print("\nEXECUTING SQL...")
-        result = execute_sql(validated_sql)
+        print("\nVALIDATING SQL SYNTAX, DATABASE SCHEMA, AND EXECUTING SQL...")
+        result = execute_sql(sql)
 
         print("\nRESULTS:")
         for row in result["rows"]:
@@ -47,12 +63,14 @@ def ask(question: str) -> dict:
         else:
             print("Results complete: no additional rows detected.")
 
+        generation = {"success": True}
+        if token_usage:
+            generation["usage"] = token_usage
+
         return {
             "question": question,
-            "sql": validated_sql,
-            "generation": {
-                "success": True,
-            },
+            "sql": sql,
+            "generation": generation,
             "validation": {
                 "syntax": True,
                 "schema": True,
@@ -68,12 +86,14 @@ def ask(question: str) -> dict:
     except SQLValidationError as exc:
         print(f"\nSQL VALIDATION ERROR: {exc}")
 
+        generation = {"success": generation_succeeded}
+        if token_usage:
+            generation["usage"] = token_usage
+
         return {
             "question": question,
             "sql": None,
-            "generation": {
-                "success": True,
-            },
+            "generation": generation,
             "validation": {
                 "syntax": False,
                 "schema": False,
@@ -88,15 +108,66 @@ def ask(question: str) -> dict:
             "error": str(exc),
         }
 
-    except Exception as exc:
-        print(f"\nSSA ERROR: {exc}")
+    except DatabaseConnectionError as exc:
+        print(f"\nSQL CONNECTION ERROR: {exc}")
+
+        generation = {"success": generation_succeeded}
+        if token_usage:
+            generation["usage"] = token_usage
 
         return {
             "question": question,
             "sql": None,
-            "generation": {
-                "success": False,
+            "generation": generation,
+            "validation": None,
+            "execution": {"success": False, "error_type": "connection"},
+            "result": None,
+            "success": False,
+            "error_stage": "connection",
+            "error": str(exc),
+        }
+
+    except SQLExecutionError as exc:
+        print(f"\nSQL EXECUTION ERROR: {exc}")
+
+        if isinstance(exc, SQLQueryTimeoutError):
+            error_type = "timeout"
+        elif isinstance(exc, SQLQueryCancelledError):
+            error_type = "cancelled"
+        else:
+            error_type = "execution"
+
+        generation = {"success": generation_succeeded}
+        if token_usage:
+            generation["usage"] = token_usage
+
+        return {
+            "question": question,
+            "sql": sql if generation_succeeded else None,
+            "generation": generation,
+            "validation": {
+                "syntax": True,
+                "schema": True,
+                "success": True,
             },
+            "execution": {"success": False, "error_type": error_type},
+            "result": None,
+            "success": False,
+            "error_stage": "execution",
+            "error": str(exc),
+        }
+
+    except Exception as exc:
+        print(f"\nSSA ERROR: {exc}")
+
+        generation = {"success": generation_succeeded}
+        if token_usage:
+            generation["usage"] = token_usage
+
+        return {
+            "question": question,
+            "sql": None,
+            "generation": generation,
             "validation": None,
             "execution": {
                 "success": False,

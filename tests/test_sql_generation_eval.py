@@ -9,6 +9,9 @@ import pytest
 from ssa.sql_generator import generate_sql
 
 
+pytestmark = pytest.mark.integration
+
+
 EVALUATION_CASES = [
     {
         "question": "Show the top 10 customers by total sales.",
@@ -33,6 +36,28 @@ EVALUATION_CASES = [
     {
         "question": "Show the number of sales orders per customer.",
         "expected": ["CustomerID", "COUNT", "GROUP BY"],
+        "forbidden": [],
+    },
+        {
+        "question": "Show the top 5 customers by total sales, including their names.",
+        "expected": [
+            "CustomerID",
+            "CustomerName",
+            "Person.Person",
+            "Sales.Store",
+            "TotalDue",
+            "GROUP BY",
+        ],
+        "forbidden": ["C.Name"],
+    },
+    {
+        "question": "Show total sales by sales territory.",
+        "expected": ["TerritoryID", "TotalDue", "GROUP BY"],
+        "forbidden": ["SubTotal"],
+    },
+    {
+        "question": "Show the number of sales orders per year.",
+        "expected": ["YEAR", "COUNT", "GROUP BY"],
         "forbidden": [],
     },
 ]
