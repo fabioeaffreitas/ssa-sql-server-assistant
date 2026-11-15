@@ -17,10 +17,11 @@ def validate_sql_schema(sql: str, query_timeout: int | None = None) -> str:
 
     timeout = get_query_timeout(query_timeout)
     connection = get_connection()
+    cursor = None
 
     try:
+        connection.timeout = timeout
         cursor = connection.cursor()
-        cursor.timeout = timeout
 
         # Ask SQL Server to compile the query without executing it.
         cursor.execute(
@@ -37,10 +38,11 @@ def validate_sql_schema(sql: str, query_timeout: int | None = None) -> str:
         return validated_sql
 
     except Exception as exc:
-        try:
-            cursor.execute("SET NOEXEC OFF;")
-        except Exception:
-            pass
+        if cursor is not None:
+            try:
+                cursor.execute("SET NOEXEC OFF;")
+            except Exception:
+                pass
 
         raise SQLValidationError(
             f"SQL schema validation failed: {exc}"
@@ -48,9 +50,13 @@ def validate_sql_schema(sql: str, query_timeout: int | None = None) -> str:
 
     finally:
         try:
-            connection.rollback()
+            if cursor is not None:
+                cursor.close()
         finally:
-            connection.close()
+            try:
+                connection.rollback()
+            finally:
+                connection.close()
 
 
 if __name__ == "__main__":

@@ -70,9 +70,10 @@ def execute_sql(
             "SQL Server connection failed before query execution."
         ) from exc
 
+    cursor = None
     try:
+        connection.timeout = timeout
         cursor = connection.cursor()
-        cursor.timeout = timeout
         try:
             cursor.execute(validated_sql)
             columns = [column[0] for column in cursor.description]
@@ -100,6 +101,10 @@ def execute_sql(
 
     finally:
         try:
-            connection.rollback()
+            if cursor is not None:
+                cursor.close()
         finally:
-            connection.close()
+            try:
+                connection.rollback()
+            finally:
+                connection.close()

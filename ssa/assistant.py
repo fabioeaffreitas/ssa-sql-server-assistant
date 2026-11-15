@@ -6,6 +6,7 @@ Natural language -> schema -> SQL -> validation -> execution -> results.
 
 from ssa.sql_generator import generate_sql
 from ssa.sql_executor import (
+    SQLExecutionConnectionError,
     SQLExecutionError,
     SQLQueryCancelledError,
     SQLQueryTimeoutError,
@@ -134,6 +135,8 @@ def ask(question: str) -> dict:
             error_type = "timeout"
         elif isinstance(exc, SQLQueryCancelledError):
             error_type = "cancelled"
+        elif isinstance(exc, SQLExecutionConnectionError):
+            error_type = "connection"
         else:
             error_type = "execution"
 

@@ -8,22 +8,34 @@ import ssa.sql_executor as executor
 class FakeCursor:
     description = [("ProductID",)]
 
+    def __init__(self):
+        self.timeout = None
+        self.closed = False
+
     def execute(self, sql):
         pass
 
     def fetchmany(self, size):
         return [(1,), (2,), (3,)][:size]
 
+    def close(self):
+        self.closed = True
+
 
 class FakeConnection:
+    def __init__(self):
+        self.cursor_instance = FakeCursor()
+        self.rolled_back = False
+        self.closed = False
+
     def cursor(self):
-        return FakeCursor()
+        return self.cursor_instance
 
     def rollback(self):
-        pass
+        self.rolled_back = True
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def test_rejects_invalid_max_rows():
@@ -45,11 +57,8 @@ def test_result_truncation(monkeypatch):
         lambda sql, query_timeout: validation_calls.append((sql, query_timeout)) or sql,
     )
 
-    monkeypatch.setattr(
-        executor,
-        "get_connection",
-        lambda: FakeConnection(),
-    )
+    connection = FakeConnection()
+    monkeypatch.setattr(executor, "get_connection", lambda: connection)
 
     result = executor.execute_sql("SELECT ProductID", max_rows=2)
 
@@ -61,6 +70,10 @@ def test_result_truncation(monkeypatch):
     assert result["truncated"] is True
     assert result["max_rows"] == 2
     assert validation_calls == [("SELECT ProductID", 30)]
+    assert connection.timeout == 30
+    assert connection.cursor_instance.closed is True
+    assert connection.rolled_back is True
+    assert connection.closed is True
 
 
 def test_result_not_truncated(monkeypatch):
@@ -116,6 +129,35 @@ def test_classifies_execution_driver_errors(monkeypatch, driver_error, error_typ
 
     with pytest.raises(error_type):
         executor.execute_sql("SELECT ProductID")
+
+
+def test_timeout_releases_cursor_and_connection(monkeypatch):
+    class TimeoutCursor(FakeCursor):
+        def execute(self, sql):
+            raise pyodbc.OperationalError("HYT00", "Query timeout expired")
+
+    class TimeoutConnection(FakeConnection):
+        def __init__(self):
+            super().__init__()
+            self.cursor_instance = TimeoutCursor()
+
+    connection = TimeoutConnection()
+    validation_calls = []
+    monkeypatch.setattr(
+        executor,
+        "validate_sql_schema",
+        lambda sql, query_timeout: validation_calls.append(query_timeout) or sql,
+    )
+    monkeypatch.setattr(executor, "get_connection", lambda: connection)
+
+    with pytest.raises(executor.SQLQueryTimeoutError):
+        executor.execute_sql("SELECT ProductID", query_timeout=7)
+
+    assert validation_calls == [7]
+    assert connection.timeout == 7
+    assert connection.cursor_instance.closed is True
+    assert connection.rolled_back is True
+    assert connection.closed is True
 
 
 def test_wraps_execution_connection_error(monkeypatch):
