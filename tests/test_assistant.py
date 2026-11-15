@@ -6,6 +6,19 @@ import pytest
 from ssa import assistant
 
 
+def assert_generation_call(mock, question):
+    mock.assert_called_once()
+    assert mock.call_args.args == (question,)
+    assert mock.call_args.kwargs["return_usage"] is True
+    assert set(mock.call_args.kwargs["timings"]) == set(assistant.TIMING_KEYS)
+
+
+def assert_execution_call(mock, sql):
+    mock.assert_called_once()
+    assert mock.call_args.args == (sql,)
+    assert set(mock.call_args.kwargs["timings"]) == set(assistant.TIMING_KEYS)
+
+
 def test_ask_success(monkeypatch):
     question = "Test question"
     expected_sql = "SELECT 1"
@@ -41,8 +54,69 @@ def test_ask_success(monkeypatch):
     }
     assert response["result"] == expected_result
     assert "error" not in response
-    generate_sql.assert_called_once_with(question, return_usage=True)
-    execute_sql.assert_called_once_with(expected_sql)
+    assert_generation_call(generate_sql, question)
+    assert_execution_call(execute_sql, expected_sql)
+
+
+def test_ask_collects_provider_neutral_timings(monkeypatch):
+    clock = iter([10.0, 10.125])
+
+    def fake_generate(question, return_usage, timings):
+        timings["retrieval_ms"] = 12.5
+        timings["generation_ms"] = 250.0
+        timings["validation_ms"] = 4.0
+        return "SELECT 1", {"total_tokens": 3}
+
+    def fake_execute(sql, timings):
+        timings["validation_ms"] += 6.0
+        timings["execution_ms"] = 18.75
+        return {
+            "columns": ["value"],
+            "rows": [{"value": 1}],
+            "row_count": 1,
+            "max_rows": 100,
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(assistant.time, "perf_counter", lambda: next(clock))
+    monkeypatch.setattr(assistant, "generate_sql", fake_generate)
+    monkeypatch.setattr(assistant, "execute_sql", fake_execute)
+
+    response = assistant.ask("Test timing")
+
+    assert response["diagnostics"] == {
+        "timings_ms": {
+            "retrieval_ms": 12.5,
+            "generation_ms": 250.0,
+            "validation_ms": 10.0,
+            "execution_ms": 18.75,
+            "total_ms": 125.0,
+        },
+        "failure_stage": None,
+    }
+    assert response["generation"]["usage"] == {"total_tokens": 3}
+
+
+def test_ask_preserves_completed_timings_on_generation_failure(monkeypatch):
+    clock = iter([2.0, 2.4])
+
+    def fail_generate(question, return_usage, timings):
+        timings["retrieval_ms"] = 100.0
+        timings["generation_ms"] = 300.0
+        raise assistant.OllamaGenerationError("model unavailable")
+
+    monkeypatch.setattr(assistant.time, "perf_counter", lambda: next(clock))
+    monkeypatch.setattr(assistant, "generate_sql", fail_generate)
+
+    response = assistant.ask("Test generation timing failure")
+    timings = response["diagnostics"]["timings_ms"]
+
+    assert response["diagnostics"]["failure_stage"] == "generation"
+    assert timings["retrieval_ms"] == 100.0
+    assert timings["generation_ms"] == 300.0
+    assert timings["validation_ms"] is None
+    assert timings["execution_ms"] is None
+    assert timings["total_ms"] == pytest.approx(400.0)
 
 
 def test_ask_validation_error(monkeypatch):
@@ -75,8 +149,8 @@ def test_ask_validation_error(monkeypatch):
     assert response["error"] == (
         "SQL validation failed. Check the query syntax and referenced schema."
     )
-    generate_sql.assert_called_once_with(question, return_usage=True)
-    execute_sql.assert_called_once_with(sql)
+    assert_generation_call(generate_sql, question)
+    assert_execution_call(execute_sql, sql)
 
 
 def test_ask_schema_validation_error_is_reported_as_validation(monkeypatch):
@@ -99,8 +173,8 @@ def test_ask_schema_validation_error_is_reported_as_validation(monkeypatch):
     assert response["error"] == (
         "SQL validation failed. Check the query syntax and referenced schema."
     )
-    generate_sql.assert_called_once_with(question, return_usage=True)
-    execute_sql.assert_called_once_with(sql)
+    assert_generation_call(generate_sql, question)
+    assert_execution_call(execute_sql, sql)
 
 
 def test_ask_generation_error(monkeypatch):
@@ -126,7 +200,7 @@ def test_ask_generation_error(monkeypatch):
     assert response["error"] == (
         "SSA could not complete the request. Check the application logs."
     )
-    generate_sql.assert_called_once_with(question, return_usage=True)
+    assert_generation_call(generate_sql, question)
     execute_sql.assert_not_called()
 
 
@@ -183,8 +257,8 @@ def test_ask_reports_execution_timeout_after_validation(monkeypatch):
         "error_type": "timeout",
     }
     assert response["error_stage"] == "execution"
-    generate_sql.assert_called_once_with(question, return_usage=True)
-    execute_sql.assert_called_once_with(sql)
+    assert_generation_call(generate_sql, question)
+    assert_execution_call(execute_sql, sql)
 
 
 def test_ask_reports_execution_error_after_validation(monkeypatch):
@@ -213,8 +287,8 @@ def test_ask_reports_execution_error_after_validation(monkeypatch):
     assert response["error"] == (
         "SQL execution failed. Check the database and generated query."
     )
-    generate_sql.assert_called_once_with(question, return_usage=True)
-    execute_sql.assert_called_once_with(sql)
+    assert_generation_call(generate_sql, question)
+    assert_execution_call(execute_sql, sql)
 
 
 def test_ask_reports_execution_connection_error(monkeypatch):
@@ -235,5 +309,5 @@ def test_ask_reports_execution_connection_error(monkeypatch):
         "error_type": "connection",
     }
     assert response["error_stage"] == "execution"
-    generate_sql.assert_called_once_with(question, return_usage=True)
-    execute_sql.assert_called_once_with(sql)
+    assert_generation_call(generate_sql, question)
+    assert_execution_call(execute_sql, sql)

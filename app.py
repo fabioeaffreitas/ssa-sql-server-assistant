@@ -110,6 +110,29 @@ if st.button("Ask SSA", type="primary", disabled=not question.strip()):
             validation = response.get("validation")
             execution = response.get("execution") or {}
             result = response.get("result") or {}
+            diagnostics = response.get("diagnostics") or {}
+            timings = diagnostics.get("timings_ms") or {}
+
+            if diagnostics:
+                with st.expander("Diagnostics", expanded=False):
+                    st.caption("Pipeline timings")
+                    timing_labels = {
+                        "retrieval_ms": "Retrieval",
+                        "generation_ms": "Generation",
+                        "validation_ms": "Validation",
+                        "execution_ms": "Execution",
+                        "total_ms": "Total",
+                    }
+                    for key, label in timing_labels.items():
+                        value = timings.get(key)
+                        display_value = (
+                            "Not reached" if value is None else f"{value:.2f} ms"
+                        )
+                        st.write(f"{label}: {display_value}")
+                    if diagnostics.get("failure_stage"):
+                        st.caption(
+                            f"Failure stage: {diagnostics['failure_stage']}"
+                        )
 
             st.subheader("Generated SQL")
 

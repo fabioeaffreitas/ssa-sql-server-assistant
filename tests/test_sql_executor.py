@@ -103,6 +103,25 @@ def test_result_not_truncated(monkeypatch):
     assert result["truncated"] is False
 
 
+def test_records_validation_and_execution_milliseconds(monkeypatch):
+    clock = iter([10.0, 10.2, 20.0, 20.35])
+    connection = FakeConnection()
+
+    monkeypatch.setattr(
+        executor,
+        "validate_sql_schema",
+        lambda sql, query_timeout: sql,
+    )
+    monkeypatch.setattr(executor, "get_connection", lambda: connection)
+    monkeypatch.setattr(executor.time, "perf_counter", lambda: next(clock))
+
+    timings = {}
+    executor.execute_sql("SELECT ProductID", timings=timings)
+
+    assert timings["validation_ms"] == pytest.approx(200.0)
+    assert timings["execution_ms"] == pytest.approx(350.0)
+
+
 @pytest.mark.parametrize(
     ("driver_error", "error_type"),
     [

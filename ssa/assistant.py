@@ -4,6 +4,8 @@ SSA - End-to-End Assistant
 Natural language -> schema -> SQL -> validation -> execution -> results.
 """
 
+import time
+
 from ssa.sql_generator import generate_sql
 from ssa.sql_generator import (
     OllamaConnectionError,
@@ -21,8 +23,37 @@ from ssa.sql_validator import SQLValidationError
 from ssa.db import ConfigurationError, DatabaseConnectionError
 
 
+TIMING_KEYS = (
+    "retrieval_ms",
+    "generation_ms",
+    "validation_ms",
+    "execution_ms",
+    "total_ms",
+)
+
+
+def _new_timings() -> dict:
+    """Return the stable provider-neutral timing shape."""
+
+    return {key: None for key in TIMING_KEYS}
+
+
+def _finish_response(response: dict, timings: dict, started_at: float) -> dict:
+    """Attach diagnostics while preserving the existing response fields."""
+
+    timings["total_ms"] = (time.perf_counter() - started_at) * 1000
+    response["diagnostics"] = {
+        "timings_ms": {key: timings.get(key) for key in TIMING_KEYS},
+        "failure_stage": response.get("error_stage"),
+    }
+    return response
+
+
 def ask(question: str) -> dict:
     """Answer a natural-language question using the database."""
+
+    started_at = time.perf_counter()
+    timings = _new_timings()
 
     print("\nQUESTION:")
     print(question)
@@ -35,11 +66,20 @@ def ask(question: str) -> dict:
         # ``return_usage`` lets the UI show Ollama's actual token accounting.
         # The fallback keeps compatibility with older/test doubles of generate_sql.
         try:
-            generated = generate_sql(question, return_usage=True)
+            generated = generate_sql(
+                question,
+                return_usage=True,
+                timings=timings,
+            )
         except TypeError as exc:
-            if "return_usage" not in str(exc):
+            if "timings" not in str(exc):
                 raise
-            generated = generate_sql(question)
+            try:
+                generated = generate_sql(question, return_usage=True)
+            except TypeError as fallback_exc:
+                if "return_usage" not in str(fallback_exc):
+                    raise
+                generated = generate_sql(question)
 
         if isinstance(generated, tuple):
             sql, token_usage = generated
@@ -51,7 +91,12 @@ def ask(question: str) -> dict:
         print(sql)
 
         print("\nVALIDATING SQL SYNTAX, DATABASE SCHEMA, AND EXECUTING SQL...")
-        result = execute_sql(sql)
+        try:
+            result = execute_sql(sql, timings=timings)
+        except TypeError as exc:
+            if "timings" not in str(exc):
+                raise
+            result = execute_sql(sql)
 
         print("\nRESULTS:")
         for row in result["rows"]:
@@ -73,7 +118,7 @@ def ask(question: str) -> dict:
         if token_usage:
             generation["usage"] = token_usage
 
-        return {
+        return _finish_response({
             "question": question,
             "sql": sql,
             "generation": generation,
@@ -87,7 +132,7 @@ def ask(question: str) -> dict:
             },
             "result": result,
             "success": True,
-        }
+        }, timings, started_at)
 
     except SQLValidationError as exc:
         error = "SQL validation failed. Check the query syntax and referenced schema."
@@ -97,7 +142,7 @@ def ask(question: str) -> dict:
         if token_usage:
             generation["usage"] = token_usage
 
-        return {
+        return _finish_response({
             "question": question,
             "sql": None,
             "generation": generation,
@@ -113,7 +158,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "validation",
             "error": error,
-        }
+        }, timings, started_at)
 
     except ConfigurationError:
         print("\nSSA CONFIGURATION ERROR")
@@ -122,7 +167,7 @@ def ask(question: str) -> dict:
         if token_usage:
             generation["usage"] = token_usage
 
-        return {
+        return _finish_response({
             "question": question,
             "sql": None,
             "generation": generation,
@@ -132,22 +177,34 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "configuration",
             "error": "SSA configuration is invalid. Check the configured environment variables.",
-        }
+        }, timings, started_at)
 
     except OllamaConnectionError:
         error = "Ollama is unavailable. Start Ollama and verify the local service."
         print(f"\nSQL GENERATION ERROR: {error}")
-        return _generation_failure(question, error, token_usage)
+        return _finish_response(
+            _generation_failure(question, error, token_usage),
+            timings,
+            started_at,
+        )
 
     except OllamaGenerationTimeoutError:
         error = "Ollama generation timed out. Check Ollama or increase OLLAMA_REQUEST_TIMEOUT."
         print(f"\nSQL GENERATION ERROR: {error}")
-        return _generation_failure(question, error, token_usage)
+        return _finish_response(
+            _generation_failure(question, error, token_usage),
+            timings,
+            started_at,
+        )
 
     except OllamaGenerationError:
         error = "Ollama could not generate SQL. Verify the configured model is available."
         print(f"\nSQL GENERATION ERROR: {error}")
-        return _generation_failure(question, error, token_usage)
+        return _finish_response(
+            _generation_failure(question, error, token_usage),
+            timings,
+            started_at,
+        )
 
     except DatabaseConnectionError as exc:
         print(f"\nSQL CONNECTION ERROR: {exc}")
@@ -156,7 +213,7 @@ def ask(question: str) -> dict:
         if token_usage:
             generation["usage"] = token_usage
 
-        return {
+        return _finish_response({
             "question": question,
             "sql": None,
             "generation": generation,
@@ -166,7 +223,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "connection",
             "error": str(exc),
-        }
+        }, timings, started_at)
 
     except SQLExecutionError as exc:
         if isinstance(exc, SQLQueryTimeoutError):
@@ -188,7 +245,7 @@ def ask(question: str) -> dict:
         if token_usage:
             generation["usage"] = token_usage
 
-        return {
+        return _finish_response({
             "question": question,
             "sql": sql if generation_succeeded else None,
             "generation": generation,
@@ -202,7 +259,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "execution",
             "error": error,
-        }
+        }, timings, started_at)
 
     except Exception as exc:
         error_stage = "execution" if generation_succeeded else "generation"
@@ -213,7 +270,7 @@ def ask(question: str) -> dict:
         if token_usage:
             generation["usage"] = token_usage
 
-        return {
+        return _finish_response({
             "question": question,
             "sql": sql if generation_succeeded else None,
             "generation": generation,
@@ -225,7 +282,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": error_stage,
             "error": error,
-        }
+        }, timings, started_at)
 
 
 def _generation_failure(question: str, error: str, token_usage: dict | None) -> dict:

@@ -24,6 +24,22 @@ EVALUATION_CASES = [
     "Show total sales by month.",
 ]
 
+TIMING_COLUMNS = (
+    "retrieval_ms",
+    "generation_ms",
+    "validation_ms",
+    "execution_ms",
+    "total_ms",
+)
+
+
+def timing_columns(response: dict) -> dict:
+    """Return generic timing fields for one evaluation response."""
+
+    diagnostics = response.get("diagnostics") or {}
+    timings = diagnostics.get("timings_ms") or {}
+    return {key: timings.get(key) for key in TIMING_COLUMNS}
+
 
 def main():
     results = []
@@ -51,6 +67,7 @@ def main():
             "execution": execution_ok,
             "success": success,
             "error": response.get("error", ""),
+            **timing_columns(response),
         })
         print(
             f"Generation: {'PASS' if generation_ok else 'FAIL'} | "
@@ -70,7 +87,10 @@ def main():
     print(f"End-to-end success: {sum(r['success'] for r in results)}/{total}")
     print(f"End-to-end reliability: {sum(r['success'] for r in results) / total:.1%}")
 
-    fieldnames = ["question", "sql", "generation", "validation", "execution", "success", "error"]
+    fieldnames = [
+        "question", "sql", "generation", "validation", "execution", "success", "error",
+        "retrieval_ms", "generation_ms", "validation_ms", "execution_ms", "total_ms",
+    ]
     with report_path.open("w", newline="", encoding="utf-8-sig") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()

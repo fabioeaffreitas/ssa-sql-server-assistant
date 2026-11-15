@@ -54,6 +54,28 @@ def test_accepts_typed_ollama_response_and_reads_usage(monkeypatch):
     }
 
 
+def test_records_retrieval_generation_and_validation_milliseconds(monkeypatch):
+    clock = iter([10.0, 10.125, 20.0, 20.25, 30.0, 30.05])
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def generate(self, **kwargs):
+            return {"response": "SELECT 1"}
+
+    _stub_retrieval_and_validation(monkeypatch)
+    monkeypatch.setattr(generator.ollama, "Client", FakeClient)
+    monkeypatch.setattr(generator.time, "perf_counter", lambda: next(clock))
+
+    timings = {}
+    assert generator.generate_sql("test", timings=timings) == "SELECT 1"
+
+    assert timings["retrieval_ms"] == pytest.approx(125.0)
+    assert timings["generation_ms"] == pytest.approx(250.0)
+    assert timings["validation_ms"] == pytest.approx(50.0)
+
+
 def test_rejects_invalid_request_timeout(monkeypatch):
     monkeypatch.setenv("OLLAMA_REQUEST_TIMEOUT", "0")
 

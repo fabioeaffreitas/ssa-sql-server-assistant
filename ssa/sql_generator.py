@@ -7,6 +7,7 @@ Natural language to SQL Server T-SQL using Ollama and retrieved schema.
 import os
 import re
 import socket
+import time
 from collections.abc import Mapping
 
 import ollama
@@ -113,6 +114,15 @@ def token_usage_from_response(response: object) -> dict:
     }
 
 
+def _add_timing(timings: dict | None, key: str, started_at: float) -> None:
+    """Accumulate one completed timing segment in milliseconds."""
+
+    if timings is None:
+        return
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    timings[key] = float(timings.get(key) or 0) + elapsed_ms
+
+
 def repair_terminal_top(sql: str) -> str:
     """Move a misplaced terminal TOP N clause into the SELECT statement."""
 
@@ -156,13 +166,18 @@ def generate_sql(
     question: str,
     n_schema_results: int = 5,
     return_usage: bool = False,
+    timings: dict | None = None,
 ) -> str | tuple[str, dict]:
     """Generate SQL Server T-SQL using retrieved database schema."""
 
     request_timeout = get_ollama_request_timeout()
 
-    # Retrieve relevant schema documents
-    schema_results = search_schema(question, n_results=n_schema_results)
+    # Retrieve relevant schema documents.
+    retrieval_started = time.perf_counter()
+    try:
+        schema_results = search_schema(question, n_results=n_schema_results)
+    finally:
+        _add_timing(timings, "retrieval_ms", retrieval_started)
 
     schema_context = "\n\n".join(
         candidate["document"] for candidate in schema_results
@@ -248,34 +263,43 @@ USER QUESTION:
 T-SQL QUERY:
 """
 
+    generation_started = time.perf_counter()
     try:
         client = ollama.Client(host=OLLAMA_BASE_URL, timeout=request_timeout)
         response = client.generate(
             model=OLLAMA_MODEL,
             prompt=prompt,
         )
+
+        response_text = _response_value(response, "response")
+        if not isinstance(response_text, str):
+            raise OllamaGenerationError(
+                "Ollama returned an invalid generation response."
+            )
+
+        sql = response_text.strip()
+        if not sql:
+            raise OllamaGenerationError("Ollama returned an empty SQL response.")
+
+        # Remove Markdown code fences if the model adds them
+        if sql.startswith("```"):
+            sql = sql.split("\n", 1)[1]
+            sql = sql.rsplit("```", 1)[0].strip()
+
+        # Repair misplaced terminal TOP N before SQL validation
+        sql = repair_terminal_top(sql)
     except (OllamaConnectionError, OllamaGenerationTimeoutError, OllamaGenerationError):
         raise
     except Exception as exc:
         raise _ollama_error(exc) from exc
+    finally:
+        _add_timing(timings, "generation_ms", generation_started)
 
-    response_text = _response_value(response, "response")
-    if not isinstance(response_text, str):
-        raise OllamaGenerationError("Ollama returned an invalid generation response.")
-
-    sql = response_text.strip()
-    if not sql:
-        raise OllamaGenerationError("Ollama returned an empty SQL response.")
-
-    # Remove Markdown code fences if the model adds them
-    if sql.startswith("```"):
-        sql = sql.split("\n", 1)[1]
-        sql = sql.rsplit("```", 1)[0].strip()
-
-    # Repair misplaced terminal TOP N before SQL validation
-    sql = repair_terminal_top(sql)
-
-    validated_sql = validate_sql(sql)
+    validation_started = time.perf_counter()
+    try:
+        validated_sql = validate_sql(sql)
+    finally:
+        _add_timing(timings, "validation_ms", validation_started)
     if return_usage:
         return validated_sql, token_usage_from_response(response)
     return validated_sql
