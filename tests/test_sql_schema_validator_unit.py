@@ -53,8 +53,12 @@ def test_cursor_open_failure_is_wrapped_without_masking_cleanup(monkeypatch):
     connection.cursor = lambda: (_ for _ in ()).throw(RuntimeError("cursor failed"))
     monkeypatch.setattr(validator, "get_connection", lambda: connection)
 
-    with pytest.raises(validator.SQLValidationError, match="cursor failed"):
+    with pytest.raises(
+        validator.SQLValidationError,
+        match="SQL schema validation failed",
+    ) as error:
         validator.validate_sql_schema("SELECT 1")
 
+    assert "cursor failed" not in str(error.value)
     assert connection.rolled_back is True
     assert connection.closed is True

@@ -6,10 +6,13 @@ Natural language to SQL Server T-SQL using Ollama and retrieved schema.
 
 import os
 import re
+import socket
+from collections.abc import Mapping
 
 import ollama
 from dotenv import load_dotenv
 
+from ssa.db import ConfigurationError
 from ssa.schema_retrieval import search_schema
 from ssa.sql_validator import validate_sql
 
@@ -17,16 +20,93 @@ load_dotenv()
 
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+DEFAULT_OLLAMA_REQUEST_TIMEOUT = 300
 
 
-def token_usage_from_response(response: dict) -> dict:
+class OllamaConnectionError(RuntimeError):
+    """Raised when Ollama cannot be reached."""
+
+
+class OllamaGenerationTimeoutError(RuntimeError):
+    """Raised when Ollama does not finish generation in time."""
+
+
+class OllamaGenerationError(RuntimeError):
+    """Raised when Ollama returns an unusable generation response."""
+
+
+def get_ollama_request_timeout(request_timeout: int | None = None) -> int:
+    """Return a positive Ollama request timeout in seconds."""
+
+    value = request_timeout
+    if value is None:
+        value = os.getenv(
+            "OLLAMA_REQUEST_TIMEOUT",
+            str(DEFAULT_OLLAMA_REQUEST_TIMEOUT),
+        )
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(
+            "OLLAMA_REQUEST_TIMEOUT must be a positive integer."
+        ) from exc
+    if timeout < 1:
+        raise ConfigurationError("OLLAMA_REQUEST_TIMEOUT must be a positive integer.")
+    return timeout
+
+
+def _ollama_error(exc: Exception) -> RuntimeError:
+    """Translate client failures without returning raw client details."""
+
+    error_name = type(exc).__name__.lower()
+    if isinstance(exc, (TimeoutError, socket.timeout)) or "timeout" in error_name:
+        return OllamaGenerationTimeoutError(
+            "Ollama generation timed out. Check Ollama or increase "
+            "OLLAMA_REQUEST_TIMEOUT."
+        )
+    if isinstance(exc, ConnectionError) or any(
+        name in error_name for name in ("connect", "network", "connection")
+    ):
+        return OllamaConnectionError(
+            "Ollama is unavailable. Start Ollama and verify the local service."
+        )
+    return OllamaGenerationError(
+        "Ollama could not generate SQL. Verify the configured model is available."
+    )
+
+
+def _response_value(response: object, key: str, default: object = None) -> object:
+    """Read fields from Ollama mappings and typed response models."""
+
+    if isinstance(response, Mapping):
+        return response.get(key, default)
+
+    getter = getattr(response, "get", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except TypeError:
+            return getter(key)
+
+    try:
+        return response[key]  # type: ignore[index]
+    except (KeyError, TypeError, AttributeError):
+        return getattr(response, key, default)
+
+
+def token_usage_from_response(response: object) -> dict:
     """Return the token counts reported by Ollama for one generation."""
 
-    prompt_tokens = int(response.get("prompt_eval_count") or 0)
-    completion_tokens = int(response.get("eval_count") or 0)
+    try:
+        prompt_tokens = int(_response_value(response, "prompt_eval_count") or 0)
+        completion_tokens = int(_response_value(response, "eval_count") or 0)
+    except (TypeError, ValueError) as exc:
+        raise OllamaGenerationError(
+            "Ollama returned invalid token usage metadata."
+        ) from exc
 
     return {
-        "model": response.get("model") or OLLAMA_MODEL,
+        "model": _response_value(response, "model") or OLLAMA_MODEL,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
@@ -78,6 +158,8 @@ def generate_sql(
     return_usage: bool = False,
 ) -> str | tuple[str, dict]:
     """Generate SQL Server T-SQL using retrieved database schema."""
+
+    request_timeout = get_ollama_request_timeout()
 
     # Retrieve relevant schema documents
     schema_results = search_schema(question, n_results=n_schema_results)
@@ -166,14 +248,24 @@ USER QUESTION:
 T-SQL QUERY:
 """
 
-    client = ollama.Client(host=OLLAMA_BASE_URL)
+    try:
+        client = ollama.Client(host=OLLAMA_BASE_URL, timeout=request_timeout)
+        response = client.generate(
+            model=OLLAMA_MODEL,
+            prompt=prompt,
+        )
+    except (OllamaConnectionError, OllamaGenerationTimeoutError, OllamaGenerationError):
+        raise
+    except Exception as exc:
+        raise _ollama_error(exc) from exc
 
-    response = client.generate(
-        model=OLLAMA_MODEL,
-        prompt=prompt,
-    )
+    response_text = _response_value(response, "response")
+    if not isinstance(response_text, str):
+        raise OllamaGenerationError("Ollama returned an invalid generation response.")
 
-    sql = response["response"].strip()
+    sql = response_text.strip()
+    if not sql:
+        raise OllamaGenerationError("Ollama returned an empty SQL response.")
 
     # Remove Markdown code fences if the model adds them
     if sql.startswith("```"):

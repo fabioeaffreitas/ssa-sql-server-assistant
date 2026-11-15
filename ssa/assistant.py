@@ -5,6 +5,11 @@ Natural language -> schema -> SQL -> validation -> execution -> results.
 """
 
 from ssa.sql_generator import generate_sql
+from ssa.sql_generator import (
+    OllamaConnectionError,
+    OllamaGenerationError,
+    OllamaGenerationTimeoutError,
+)
 from ssa.sql_executor import (
     SQLExecutionConnectionError,
     SQLExecutionError,
@@ -13,7 +18,7 @@ from ssa.sql_executor import (
     execute_sql,
 )
 from ssa.sql_validator import SQLValidationError
-from ssa.db import DatabaseConnectionError
+from ssa.db import ConfigurationError, DatabaseConnectionError
 
 
 def ask(question: str) -> dict:
@@ -85,7 +90,8 @@ def ask(question: str) -> dict:
         }
 
     except SQLValidationError as exc:
-        print(f"\nSQL VALIDATION ERROR: {exc}")
+        error = "SQL validation failed. Check the query syntax and referenced schema."
+        print(f"\nSQL VALIDATION ERROR: {type(exc).__name__}")
 
         generation = {"success": generation_succeeded}
         if token_usage:
@@ -106,8 +112,42 @@ def ask(question: str) -> dict:
             "result": None,
             "success": False,
             "error_stage": "validation",
-            "error": str(exc),
+            "error": error,
         }
+
+    except ConfigurationError:
+        print("\nSSA CONFIGURATION ERROR")
+
+        generation = {"success": generation_succeeded}
+        if token_usage:
+            generation["usage"] = token_usage
+
+        return {
+            "question": question,
+            "sql": None,
+            "generation": generation,
+            "validation": None,
+            "execution": {"success": False},
+            "result": None,
+            "success": False,
+            "error_stage": "configuration",
+            "error": "SSA configuration is invalid. Check the configured environment variables.",
+        }
+
+    except OllamaConnectionError:
+        error = "Ollama is unavailable. Start Ollama and verify the local service."
+        print(f"\nSQL GENERATION ERROR: {error}")
+        return _generation_failure(question, error, token_usage)
+
+    except OllamaGenerationTimeoutError:
+        error = "Ollama generation timed out. Check Ollama or increase OLLAMA_REQUEST_TIMEOUT."
+        print(f"\nSQL GENERATION ERROR: {error}")
+        return _generation_failure(question, error, token_usage)
+
+    except OllamaGenerationError:
+        error = "Ollama could not generate SQL. Verify the configured model is available."
+        print(f"\nSQL GENERATION ERROR: {error}")
+        return _generation_failure(question, error, token_usage)
 
     except DatabaseConnectionError as exc:
         print(f"\nSQL CONNECTION ERROR: {exc}")
@@ -129,16 +169,20 @@ def ask(question: str) -> dict:
         }
 
     except SQLExecutionError as exc:
-        print(f"\nSQL EXECUTION ERROR: {exc}")
-
         if isinstance(exc, SQLQueryTimeoutError):
             error_type = "timeout"
+            error = "SQL query timed out. Try a narrower question or increase SQL_QUERY_TIMEOUT."
         elif isinstance(exc, SQLQueryCancelledError):
             error_type = "cancelled"
+            error = "SQL query was cancelled."
         elif isinstance(exc, SQLExecutionConnectionError):
             error_type = "connection"
+            error = "SQL Server is unavailable. Check the database connection settings."
         else:
             error_type = "execution"
+            error = "SQL execution failed. Check the database and generated query."
+
+        print(f"\nSQL EXECUTION ERROR: {error_type}")
 
         generation = {"success": generation_succeeded}
         if token_usage:
@@ -157,11 +201,13 @@ def ask(question: str) -> dict:
             "result": None,
             "success": False,
             "error_stage": "execution",
-            "error": str(exc),
+            "error": error,
         }
 
     except Exception as exc:
-        print(f"\nSSA ERROR: {exc}")
+        error_stage = "execution" if generation_succeeded else "generation"
+        error = "SSA could not complete the request. Check the application logs."
+        print(f"\nSSA ERROR ({error_stage}): {type(exc).__name__}")
 
         generation = {"success": generation_succeeded}
         if token_usage:
@@ -169,7 +215,7 @@ def ask(question: str) -> dict:
 
         return {
             "question": question,
-            "sql": None,
+            "sql": sql if generation_succeeded else None,
             "generation": generation,
             "validation": None,
             "execution": {
@@ -177,9 +223,28 @@ def ask(question: str) -> dict:
             },
             "result": None,
             "success": False,
-            "error_stage": "execution_or_generation",
-            "error": str(exc),
+            "error_stage": error_stage,
+            "error": error,
         }
+
+
+def _generation_failure(question: str, error: str, token_usage: dict | None) -> dict:
+    """Build a stable, safe response for Ollama generation failures."""
+
+    generation = {"success": False}
+    if token_usage:
+        generation["usage"] = token_usage
+    return {
+        "question": question,
+        "sql": None,
+        "generation": generation,
+        "validation": None,
+        "execution": {"success": False},
+        "result": None,
+        "success": False,
+        "error_stage": "generation",
+        "error": error,
+    }
 
 
 if __name__ == "__main__":

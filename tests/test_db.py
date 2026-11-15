@@ -41,6 +41,38 @@ def test_rejects_invalid_query_timeout(monkeypatch):
         db.get_query_timeout()
 
 
+@pytest.mark.parametrize(
+    "environment_name",
+    ["SQL_TRUSTED_CONNECTION", "SQL_ENCRYPT", "SQL_TRUST_SERVER_CERTIFICATE"],
+)
+def test_rejects_invalid_boolean_configuration(monkeypatch, environment_name):
+    monkeypatch.setenv(environment_name, "maybe")
+
+    with pytest.raises(db.ConfigurationError, match=environment_name):
+        db.get_connection()
+
+
+@pytest.mark.parametrize("environment_name", ["SQL_SERVER", "SQL_DATABASE", "SQL_DRIVER"])
+def test_rejects_empty_required_connection_setting(monkeypatch, environment_name):
+    monkeypatch.setenv(environment_name, "   ")
+
+    with pytest.raises(db.ConfigurationError, match=environment_name):
+        db.get_connection()
+
+
+def test_missing_sql_authentication_credentials_is_safe(monkeypatch):
+    secret = "super-secret-password"
+    monkeypatch.setenv("SQL_TRUSTED_CONNECTION", "no")
+    monkeypatch.delenv("SQL_USERNAME", raising=False)
+    monkeypatch.delenv("SQL_PASSWORD", raising=False)
+
+    with pytest.raises(db.ConfigurationError) as error:
+        db.get_connection()
+
+    assert secret not in str(error.value)
+    assert "PWD=" not in str(error.value)
+
+
 def test_wraps_driver_connection_errors(monkeypatch):
     def fail_connect(connection_string, timeout):
         raise pyodbc.OperationalError("08001", "Server unavailable")

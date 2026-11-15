@@ -1,6 +1,8 @@
 
 from unittest.mock import Mock
 
+import pytest
+
 from ssa import assistant
 
 
@@ -70,7 +72,9 @@ def test_ask_validation_error(monkeypatch):
     }
     assert response["result"] is None
     assert response["error_stage"] == "validation"
-    assert "Invalid column" in response["error"]
+    assert response["error"] == (
+        "SQL validation failed. Check the query syntax and referenced schema."
+    )
     generate_sql.assert_called_once_with(question, return_usage=True)
     execute_sql.assert_called_once_with(sql)
 
@@ -92,7 +96,9 @@ def test_ask_schema_validation_error_is_reported_as_validation(monkeypatch):
     assert response["validation"]["success"] is False
     assert response["execution"] == {"success": False}
     assert response["error_stage"] == "validation"
-    assert "schema" in response["error"]
+    assert response["error"] == (
+        "SQL validation failed. Check the query syntax and referenced schema."
+    )
     generate_sql.assert_called_once_with(question, return_usage=True)
     execute_sql.assert_called_once_with(sql)
 
@@ -116,10 +122,42 @@ def test_ask_generation_error(monkeypatch):
         "success": False,
     }
     assert response["result"] is None
-    assert response["error_stage"] == "execution_or_generation"
-    assert "Model unavailable" in response["error"]
+    assert response["error_stage"] == "generation"
+    assert response["error"] == (
+        "SSA could not complete the request. Check the application logs."
+    )
     generate_sql.assert_called_once_with(question, return_usage=True)
     execute_sql.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (
+            assistant.OllamaConnectionError("raw URL and credentials"),
+            "Ollama is unavailable.",
+        ),
+        (
+            assistant.OllamaGenerationTimeoutError("raw timeout details"),
+            "Ollama generation timed out.",
+        ),
+        (
+            assistant.OllamaGenerationError("raw model response"),
+            "Ollama could not generate SQL.",
+        ),
+    ],
+)
+def test_ask_classifies_generation_failures_safely(monkeypatch, failure, message):
+    generate_sql = Mock(side_effect=failure)
+    monkeypatch.setattr(assistant, "generate_sql", generate_sql)
+
+    response = assistant.ask("Test generation failure")
+
+    assert response["error_stage"] == "generation"
+    assert response["generation"] == {"success": False}
+    assert response["error"].startswith(message)
+    assert "raw" not in response["error"]
+    assert "credentials" not in response["error"]
 
 
 def test_ask_reports_execution_timeout_after_validation(monkeypatch):
@@ -172,7 +210,9 @@ def test_ask_reports_execution_error_after_validation(monkeypatch):
         "error_type": "execution",
     }
     assert response["error_stage"] == "execution"
-    assert "Query execution failed" in response["error"]
+    assert response["error"] == (
+        "SQL execution failed. Check the database and generated query."
+    )
     generate_sql.assert_called_once_with(question, return_usage=True)
     execute_sql.assert_called_once_with(sql)
 

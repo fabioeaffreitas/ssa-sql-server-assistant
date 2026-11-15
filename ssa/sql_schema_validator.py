@@ -45,7 +45,7 @@ def validate_sql_schema(sql: str, query_timeout: int | None = None) -> str:
                 pass
 
         raise SQLValidationError(
-            f"SQL schema validation failed: {exc}"
+            "SQL schema validation failed. Check the referenced database schema."
         ) from exc
 
     finally:

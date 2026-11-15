@@ -42,7 +42,7 @@ def _execution_error(exc: Exception) -> SQLExecutionError:
     ):
         return SQLQueryCancelledError("SQL query was cancelled.")
 
-    return SQLExecutionError(f"SQL execution failed: {exc}")
+    return SQLExecutionError("SQL execution failed.")
 
 
 def execute_sql(

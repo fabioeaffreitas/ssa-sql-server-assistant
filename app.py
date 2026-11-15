@@ -120,19 +120,21 @@ if st.button("Ask SSA", type="primary", disabled=not question.strip()):
                 st.info("SQL was not generated.")
 
             if not generation.get("success"):
-                st.error("SQL generation failed.")
+                st.error(response.get("error") or "SQL generation failed.")
                 st.stop()
 
             if validation is None:
-                st.warning("SQL validation was not completed.")
+                st.warning(response.get("error") or "SQL validation was not completed.")
                 st.stop()
 
             if validation.get("success"):
                 st.success("SQL validation successful")
             else:
-                st.error("SQL validation failed.")
+                st.error(response.get("error") or "SQL validation failed.")
                 st.stop()
 
+            columns = []
+            rows = []
             if execution.get("success"):
                 st.success("Query executed successfully")
 
@@ -169,10 +171,10 @@ if st.button("Ask SSA", type="primary", disabled=not question.strip()):
                         "Results limited to the configured maximum row count."
                     )
             else:
-                st.error("SQL execution failed.")
+                st.error(response.get("error") or "SQL execution failed.")
 
             if not response.get("success"):
                 st.warning("SSA did not complete the request successfully.")
 
         except Exception as exc:
-            st.error(f"SSA error: {exc}")
+            st.error("SSA could not complete the request. Check the application logs.")
