@@ -5,6 +5,9 @@ __pycache__/
 *.pyd
 .venv/
 venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Environment variables and secrets
 .env
@@ -22,6 +25,13 @@ logs/
 # Temporary files
 tmp/
 temp/
+
+# Generated schema and evaluation artifacts
+data/
+reports/
+
+# Local Streamlit secrets; shared Streamlit configuration may remain tracked
+.streamlit/secrets.toml
 
 # Local model files
 models/
