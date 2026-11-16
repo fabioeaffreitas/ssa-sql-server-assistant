@@ -80,7 +80,7 @@ Deterministic test implementations are available in `tests/fakes.py`, including 
 
 ## Installation
 
-SSA requires Python 3.12, SQL Server 2025 with AdventureWorks2025, ODBC Driver 18 for SQL Server, and a local Ollama installation with the configured model available. These external services and drivers are not installed by this repository.
+SSA requires Python 3.12, SQL Server 2025 with AdventureWorks2025, Microsoft ODBC Driver 18 for SQL Server, and a local Ollama installation with the configured model available. The ODBC driver, SQL Server, and Ollama are external prerequisites and are not installed by this repository.
 
 From PowerShell:
 
@@ -92,7 +92,7 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and edit the values for the local environment. Do not commit `.env`, credentials, or generated `data/` and `reports/` artifacts.
+Copy `.env.example` to `.env` and edit the values for the local environment. Use `SQL_SERVER` for a host, named instance, or host-and-port value supported by the ODBC connection string, and install Microsoft ODBC Driver 18 separately. Do not commit `.env`, credentials, or generated `data/` and `reports/` artifacts.
 
 Install or start Ollama separately, then make the configured model available. The current default model is `qwen2.5-coder:7b`.
 
@@ -105,11 +105,11 @@ Configuration is loaded from environment variables, including a local `.env` fil
 | `SQL_SERVER` | SQL Server host or instance | `localhost` |
 | `SQL_DATABASE` | Database name | `AdventureWorks2025` |
 | `SQL_DRIVER` | ODBC driver name | `ODBC Driver 18 for SQL Server` |
-| `SQL_TRUSTED_CONNECTION` | Windows authentication toggle | `yes` |
+| `SQL_TRUSTED_CONNECTION` | Windows authentication toggle; use `no` for SQL authentication | `yes` |
 | `SQL_USERNAME` | SQL authentication username | Required when trusted connection is disabled |
 | `SQL_PASSWORD` | SQL authentication password | Required when trusted connection is disabled |
-| `SQL_ENCRYPT` | ODBC encryption toggle | `yes` |
-| `SQL_TRUST_SERVER_CERTIFICATE` | Whether to trust the server certificate | `yes` |
+| `SQL_ENCRYPT` | Whether the ODBC connection encrypts traffic | `yes` |
+| `SQL_TRUST_SERVER_CERTIFICATE` | Whether to skip normal certificate-chain validation | `yes` |
 | `SQL_CONNECTION_TIMEOUT` | SQL Server connection timeout in seconds | `10` |
 | `SQL_QUERY_TIMEOUT` | SQL query timeout in seconds | `30` |
 | `OLLAMA_BASE_URL` | Ollama service URL | `http://localhost:11434` |
@@ -118,7 +118,9 @@ Configuration is loaded from environment variables, including a local `.env` fil
 
 Boolean settings accept `yes`, `no`, `true`, `false`, `1`, or `0`. Timeout settings must be positive integers.
 
-For SQL authentication, set `SQL_TRUSTED_CONNECTION=no` and provide `SQL_USERNAME` and `SQL_PASSWORD` through the local environment. Never place real credentials in documentation or source control.
+For Windows authentication, leave `SQL_TRUSTED_CONNECTION=yes`; the current connection uses the Windows identity running SSA. For SQL authentication, set `SQL_TRUSTED_CONNECTION=no` and provide non-empty `SQL_USERNAME` and `SQL_PASSWORD` through the local environment. Never place real credentials in documentation or source control.
+
+`SQL_ENCRYPT` controls whether the ODBC connection encrypts traffic. `SQL_TRUST_SERVER_CERTIFICATE` controls certificate validation; it does not disable encryption. The local example uses `SQL_ENCRYPT=yes` and `SQL_TRUST_SERVER_CERTIFICATE=yes` to accommodate common self-signed development certificates. Trusting the server certificate bypasses normal certificate-chain validation, so production deployments should use `SQL_TRUST_SERVER_CERTIFICATE=no` with a certificate that the client can validate.
 
 ## Preparing the schema index
 
@@ -130,7 +132,7 @@ The schema workflow exports metadata from SQL Server, creates readable schema co
 .\.venv\Scripts\python.exe -m ssa.schema_index
 ```
 
-The default ChromaDB persistence path is `data/chroma_db` and the active collection is `ssa_schema`. The export step requires a working SQL Server connection. Generated metadata, context, and ChromaDB files are local artifacts and are not source-controlled application code.
+The default ChromaDB persistence path is `data/chroma_db` and the active collection is `ssa_schema`; these are currently fixed in the application rather than environment-configurable. The export step requires a working SQL Server connection. Generated metadata, context, and ChromaDB files are local artifacts and are not source-controlled application code.
 
 ## Running SSA
 
