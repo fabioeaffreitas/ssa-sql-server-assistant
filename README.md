@@ -223,6 +223,16 @@ The live evaluation script runs the fixed 14-question AdventureWorks2025 evaluat
 
 The verified result is **14/14 successful end-to-end evaluations** on that fixed AdventureWorks2025 set. This is a project-specific evaluation result, not a general accuracy guarantee.
 
+## Continuous integration
+
+GitHub Actions runs the deterministic test suite on `windows-latest` with Python 3.12. The workflow installs `requirements-dev.txt`, runs `python -m pip check`, and executes pytest with an isolated runner temporary directory:
+
+```powershell
+python -m pytest -q -m "not integration"
+```
+
+CI does not install or start SQL Server, Ollama, ChromaDB services, AdventureWorks2025, or the Microsoft ODBC driver. Integration tests and the live evaluation are therefore excluded from CI; run them separately in an environment configured with the required local services and database. CI verifies reproducible Python installation and deterministic behavior, not live database connectivity or model-generation quality.
+
 ## Project status and roadmap
 
 ### Implemented
