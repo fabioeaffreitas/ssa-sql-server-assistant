@@ -7,6 +7,11 @@ from ssa.pipeline import (
     PipelineStageError,
     TIMING_KEYS,
 )
+from tests.fakes import (
+    FakeRelationalDatabaseAdapter,
+    FakeSQLGenerator,
+    TimingAwareFakeRelationalDatabaseAdapter,
+)
 
 
 def _result() -> QueryResult:
@@ -145,9 +150,9 @@ def test_generation_failure_preserves_identity_and_stage():
 
 def test_explicit_validation_failure_preserves_stage_and_identity():
     error = ValueError("validation failed")
-
-    def generator(question, *, return_usage, timings):
-        raise PipelineStageError("validation", error)
+    generator = FakeSQLGenerator(
+        stage_error=PipelineStageError("validation", error),
+    )
 
     with pytest.raises(PipelineExecutionError) as raised:
         PipelineOrchestrator(generator, BasicAdapter([])).run("question")
@@ -196,3 +201,47 @@ def test_pipeline_has_no_provider_specific_runtime_imports():
     assert not hasattr(pipeline, "ollama")
     assert not hasattr(pipeline, "chromadb")
     assert not hasattr(pipeline, "pyodbc")
+
+
+def test_reusable_fake_generator_supports_sql_only_and_usage_results():
+    sql_only = FakeSQLGenerator(sql="SELECT 1")
+    with_usage = FakeSQLGenerator(
+        sql="SELECT 2",
+        usage={"model": "fake", "total_tokens": 3},
+    )
+
+    assert sql_only("question", return_usage=True) == "SELECT 1"
+    assert with_usage("question", return_usage=True) == (
+        "SELECT 2",
+        {"model": "fake", "total_tokens": 3},
+    )
+    assert sql_only.calls[0]["question"] == "question"
+    assert with_usage.calls[0]["return_usage"] is True
+
+
+def test_reusable_database_fakes_support_standard_and_timing_aware_calls():
+    standard = FakeRelationalDatabaseAdapter()
+    timing_aware = TimingAwareFakeRelationalDatabaseAdapter()
+    timings = {"execution_ms": None}
+
+    standard_result = standard.execute_read(ValidatedQuery("SELECT 1"))
+    timing_result = timing_aware.execute_read(
+        ValidatedQuery("SELECT 1"),
+        max_rows=10,
+        timings=timings,
+    )
+
+    assert standard_result.max_rows == 100
+    assert timing_result.max_rows == 10
+    assert standard.execution_calls[0][1] == 100
+    assert timing_aware.execution_calls[0][1] == 10
+    assert timing_aware.timing_calls == [timings]
+
+
+def test_reusable_fake_instances_have_independent_logs_and_state():
+    first = FakeSQLGenerator()
+    second = FakeSQLGenerator()
+    first("one")
+
+    assert first.calls != second.calls
+    assert second.calls == []

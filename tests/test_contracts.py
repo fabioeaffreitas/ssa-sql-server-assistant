@@ -14,6 +14,11 @@ from ssa.contracts import (
     UsageMetadata,
     ValidatedQuery,
 )
+from tests.fakes import (
+    FakeLLMProvider,
+    FakeRelationalDatabaseAdapter,
+    FakeSchemaRetriever,
+)
 
 
 def test_usage_metadata_preserves_missing_and_zero_values():
@@ -125,42 +130,14 @@ def test_contract_dataclasses_are_constructible_and_immutable_where_metadata_is_
         GenerationRequest("question", "schema").question = "changed"
 
 
-class FakeProvider:
-    def generate(self, request: GenerationRequest) -> GenerationResult:
-        return GenerationResult(query=f"SELECT '{request.question}'")
-
-
-class FakeRetriever:
-    def retrieve(self, question: str, limit: int = 5) -> list[SchemaDocument]:
-        return [SchemaDocument(id="table", document=question)][:limit]
-
-
-class FakeDatabase:
-    def validate_read_query(
-        self,
-        query: str,
-        timeout: int | None = None,
-    ) -> ValidatedQuery:
-        return ValidatedQuery(query)
-
-    def execute_read(
-        self,
-        query: ValidatedQuery,
-        max_rows: int = 100,
-        timeout: int | None = None,
-    ) -> QueryResult:
-        return QueryResult(
-            columns=["value"],
-            rows=[{"value": query.sql}],
-            row_count=1,
-            max_rows=max_rows,
-        )
-
-
 def test_fake_implementations_are_compatible_with_protocols():
-    provider: LLMProvider = FakeProvider()
-    retriever: SchemaRetriever = FakeRetriever()
-    database: RelationalDatabaseAdapter = FakeDatabase()
+    provider: LLMProvider = FakeLLMProvider(
+        GenerationResult(query="SELECT 'question'")
+    )
+    retriever: SchemaRetriever = FakeSchemaRetriever([
+        SchemaDocument(id="table", document="schema")
+    ])
+    database: RelationalDatabaseAdapter = FakeRelationalDatabaseAdapter()
 
     generation = provider.generate(GenerationRequest("question", "schema"))
     documents = retriever.retrieve("schema", limit=1)
@@ -171,3 +148,38 @@ def test_fake_implementations_are_compatible_with_protocols():
     assert len(documents) == 1
     assert validated.sql == generation.query
     assert result.rows == [{"value": generation.query}]
+
+
+def test_fake_provider_records_requests_and_injects_failures():
+    error = RuntimeError("provider failure")
+    provider = FakeLLMProvider(error=error)
+    request = GenerationRequest("question", "schema")
+
+    with pytest.raises(RuntimeError) as raised:
+        provider.generate(request)
+
+    assert raised.value is error
+    assert provider.calls == [request]
+
+
+def test_fake_retriever_records_arguments_and_returns_defensive_copy():
+    retriever = FakeSchemaRetriever([
+        SchemaDocument(id="table", document="schema")
+    ])
+
+    returned = retriever.retrieve("customer question", limit=1)
+    returned.clear()
+
+    assert retriever.calls == [("customer question", 1)]
+    assert len(retriever.documents) == 1
+
+
+def test_fake_database_records_validation_execution_and_limits():
+    database = FakeRelationalDatabaseAdapter()
+
+    validated = database.validate_read_query("SELECT 1", timeout=7)
+    result = database.execute_read(validated, max_rows=25, timeout=8)
+
+    assert database.validation_calls == [("SELECT 1", 7)]
+    assert database.execution_calls == [(ValidatedQuery("SELECT 1"), 25, 8)]
+    assert result.max_rows == 25
