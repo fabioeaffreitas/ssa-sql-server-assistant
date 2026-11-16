@@ -18,4 +18,8 @@ Execution success is not semantic correctness. A query can generate, validate, a
 
 Ambiguous questions must be clarified before semantic scoring. Examples include the sales measure, customer identity, date boundaries, tie ordering, null semantics, and whether “month” means calendar month or month-year.
 
-This dataset is structure only at this checkpoint. It is not an accuracy measurement and is not integrated into the live evaluation runner.
+The live evaluation CSV appends `case_id`, `review_status`, `pipeline_success`, `sql_structure_pass`, `result_pass`, `semantic_status`, `semantic_pass`, and `semantic_failure_reason` after the historical pipeline and timing columns. Multiple failure reasons are joined with `;`, and unavailable values are written as empty CSV fields.
+
+`review_required` and `excluded` cases produce `not_evaluated`; they are not counted as semantic failures. Semantic accuracy uses only evaluated `pass` and `fail` cases as its denominator. If no verified cases are eligible, semantic accuracy is reported as `N/A`.
+
+The existing 14/14 pipeline-success result remains a reliability metric and is not semantic accuracy. The current dataset contains no verified ground truth, so semantic scoring currently produces fourteen `not_evaluated` results. The semantic fields are integrated into the runner, but no live evaluation has been run for this checkpoint.

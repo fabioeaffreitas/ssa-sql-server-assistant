@@ -2,9 +2,12 @@
 
 import csv
 from datetime import datetime
+import json
 from pathlib import Path
+from typing import Any, Callable
 
 from ssa.assistant import ask
+from ssa.semantic_evaluation import compare_semantics
 
 
 EVALUATION_CASES = [
@@ -32,6 +35,33 @@ TIMING_COLUMNS = (
     "total_ms",
 )
 
+DATASET_PATH = Path(__file__).resolve().parent.parent / "evaluation" / "semantic_cases.json"
+SUPPORTED_SCHEMA_VERSION = 1
+EXPECTED_DATASET_ID = "adventureworks2025-semantic-v1"
+REVIEW_STATUSES = {"review_required", "verified", "excluded"}
+
+HISTORICAL_COLUMNS = (
+    "question",
+    "sql",
+    "generation",
+    "validation",
+    "execution",
+    "success",
+    "error",
+    *TIMING_COLUMNS,
+)
+
+SEMANTIC_COLUMNS = (
+    "case_id",
+    "review_status",
+    "pipeline_success",
+    "sql_structure_pass",
+    "result_pass",
+    "semantic_status",
+    "semantic_pass",
+    "semantic_failure_reason",
+)
+
 
 def timing_columns(response: dict) -> dict:
     """Return generic timing fields for one evaluation response."""
@@ -41,8 +71,153 @@ def timing_columns(response: dict) -> dict:
     return {key: timings.get(key) for key in TIMING_COLUMNS}
 
 
-def main():
+def load_semantic_dataset(path: Path | None = None) -> tuple[dict[str, Any], ...]:
+    """Load and validate the semantic dataset before any live request."""
+
+    dataset_path = path or DATASET_PATH
+    try:
+        dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError("Semantic evaluation dataset is missing.") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("Semantic evaluation dataset is malformed JSON.") from exc
+
+    if not isinstance(dataset, dict):
+        raise ValueError("Semantic evaluation dataset must be a JSON object.")
+    if dataset.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+        raise ValueError("Unsupported semantic evaluation dataset schema version.")
+    if dataset.get("dataset_id") != EXPECTED_DATASET_ID:
+        raise ValueError("Unexpected semantic evaluation dataset identity.")
+
+    cases = dataset.get("cases")
+    if not isinstance(cases, list) or len(cases) != len(EVALUATION_CASES):
+        raise ValueError("Semantic evaluation dataset must contain exactly 14 cases.")
+
+    case_ids = [case.get("case_id") for case in cases if isinstance(case, dict)]
+    if len(case_ids) != len(cases) or len(set(case_ids)) != len(case_ids):
+        raise ValueError("Semantic evaluation case IDs must be unique.")
+
+    questions = [case.get("question") for case in cases]
+    if questions != EVALUATION_CASES:
+        raise ValueError("Semantic evaluation questions do not match the live evaluator.")
+
+    for case in cases:
+        if not isinstance(case, dict) or case.get("review_status") not in REVIEW_STATUSES:
+            raise ValueError("Semantic evaluation case has an invalid review status.")
+
+    return tuple(cases)
+
+
+def evaluate_response(
+    question: str,
+    response: dict,
+    cases: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    """Convert one assistant response into a backward-compatible evaluation row."""
+
+    case = next(case for case in cases if case["question"] == question)
+    pipeline_success = bool(response.get("success", False))
+    generation = response.get("generation") or {}
+    validation = response.get("validation") or {}
+    execution = response.get("execution") or {}
+    semantic = compare_semantics(
+        case,
+        response.get("sql"),
+        response.get("result"),
+        pipeline_success,
+    )
+    return {
+        "question": question,
+        "sql": response.get("sql", ""),
+        "generation": generation.get("success", False),
+        "validation": validation.get("success", False),
+        "execution": execution.get("success", False),
+        "success": pipeline_success,
+        "error": response.get("error", ""),
+        **timing_columns(response),
+        "case_id": case["case_id"],
+        "review_status": case["review_status"],
+        "pipeline_success": semantic.pipeline_success,
+        "sql_structure_pass": semantic.sql_structure_pass,
+        "result_pass": semantic.result_pass,
+        "semantic_status": semantic.status,
+        "semantic_pass": semantic.semantic_pass,
+        "semantic_failure_reason": ";".join(semantic.failure_reasons),
+    }
+
+
+def summary_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return historical pipeline and semantic summary metrics."""
+
+    semantic_counts = {
+        status: sum(row["semantic_status"] == status for row in results)
+        for status in ("pass", "fail", "not_evaluated")
+    }
+    evaluated = semantic_counts["pass"] + semantic_counts["fail"]
+    return {
+        "total": len(results),
+        "generation_success": sum(bool(row["generation"]) for row in results),
+        "validation_success": sum(bool(row["validation"]) for row in results),
+        "execution_success": sum(bool(row["execution"]) for row in results),
+        "pipeline_success": sum(bool(row["success"]) for row in results),
+        "semantic_pass_count": semantic_counts["pass"],
+        "semantic_fail_count": semantic_counts["fail"],
+        "semantic_not_evaluated_count": semantic_counts["not_evaluated"],
+        "semantic_accuracy": (
+            semantic_counts["pass"] / evaluated if evaluated else None
+        ),
+    }
+
+
+def write_report(results: list[dict[str, Any]], report_path: Path) -> None:
+    """Write the historical CSV fields followed by semantic fields."""
+
+    with report_path.open("w", newline="", encoding="utf-8-sig") as csvfile:
+        writer = csv.DictWriter(
+            csvfile,
+            fieldnames=[*HISTORICAL_COLUMNS, *SEMANTIC_COLUMNS],
+        )
+        writer.writeheader()
+        writer.writerows(results)
+
+
+def run_evaluation(
+    ask_callable: Callable[[str], dict] = ask,
+    dataset_path: Path | None = None,
+    report_path: Path | None = None,
+    verbose: bool = False,
+) -> tuple[list[dict[str, Any]], Path | None]:
+    """Run the fixed evaluation sequence after validating its dataset."""
+
+    cases = load_semantic_dataset(dataset_path)
     results = []
+    output_path = report_path
+
+    if output_path is not None:
+        output_path.parent.mkdir(exist_ok=True)
+
+    for index, question in enumerate(EVALUATION_CASES, start=1):
+        if verbose:
+            print(f"\n[{index}/{len(EVALUATION_CASES)}] {question}")
+            print("-" * 70)
+        response = ask_callable(question)
+        row = evaluate_response(question, response, cases)
+        results.append(row)
+        if verbose:
+            print(
+                f"Generation: {'PASS' if row['generation'] else 'FAIL'} | "
+                f"Validation: {'PASS' if row['validation'] else 'FAIL'} | "
+                f"Execution: {'PASS' if row['execution'] else 'FAIL'}"
+            )
+            if not row["success"]:
+                print(f"Error: {row['error']}")
+
+    if output_path is not None:
+        write_report(results, output_path)
+    return results, output_path
+
+
+def main():
     project_root = Path(__file__).resolve().parent.parent
     reports_dir = project_root / "reports"
     reports_dir.mkdir(exist_ok=True)
@@ -50,51 +225,22 @@ def main():
 
     print("\nSSA LIVE TEXT-TO-SQL EVALUATION")
     print("=" * 70)
-
-    for index, question in enumerate(EVALUATION_CASES, start=1):
-        print(f"\n[{index}/{len(EVALUATION_CASES)}] {question}")
-        print("-" * 70)
-        response = ask(question)
-        generation_ok = response.get("generation", {}).get("success", False)
-        validation_ok = response.get("validation", {}).get("success", False)
-        execution_ok = response.get("execution", {}).get("success", False)
-        success = response.get("success", False)
-        results.append({
-            "question": question,
-            "sql": response.get("sql", ""),
-            "generation": generation_ok,
-            "validation": validation_ok,
-            "execution": execution_ok,
-            "success": success,
-            "error": response.get("error", ""),
-            **timing_columns(response),
-        })
-        print(
-            f"Generation: {'PASS' if generation_ok else 'FAIL'} | "
-            f"Validation: {'PASS' if validation_ok else 'FAIL'} | "
-            f"Execution: {'PASS' if execution_ok else 'FAIL'}"
-        )
-        if not success:
-            print(f"Error: {response.get('error')}")
-
-    total = len(results)
+    results, report_path = run_evaluation(report_path=report_path, verbose=True)
+    metrics = summary_metrics(results)
+    total = metrics["total"]
     print("\n\nEVALUATION SUMMARY")
     print("=" * 70)
     print(f"Questions evaluated: {total}")
-    print(f"Generation success: {sum(r['generation'] for r in results)}/{total}")
-    print(f"Validation success: {sum(r['validation'] for r in results)}/{total}")
-    print(f"Execution success: {sum(r['execution'] for r in results)}/{total}")
-    print(f"End-to-end success: {sum(r['success'] for r in results)}/{total}")
-    print(f"End-to-end reliability: {sum(r['success'] for r in results) / total:.1%}")
-
-    fieldnames = [
-        "question", "sql", "generation", "validation", "execution", "success", "error",
-        "retrieval_ms", "generation_ms", "validation_ms", "execution_ms", "total_ms",
-    ]
-    with report_path.open("w", newline="", encoding="utf-8-sig") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
+    print(f"Generation success: {metrics['generation_success']}/{total}")
+    print(f"Validation success: {metrics['validation_success']}/{total}")
+    print(f"Execution success: {metrics['execution_success']}/{total}")
+    print(f"End-to-end success: {metrics['pipeline_success']}/{total}")
+    print(f"End-to-end reliability: {metrics['pipeline_success'] / total:.1%}")
+    print(f"Semantic pass: {metrics['semantic_pass_count']}/{total}")
+    print(f"Semantic fail: {metrics['semantic_fail_count']}/{total}")
+    print(f"Semantic not evaluated: {metrics['semantic_not_evaluated_count']}/{total}")
+    accuracy = metrics["semantic_accuracy"]
+    print(f"Semantic accuracy: {accuracy:.1%}" if accuracy is not None else "Semantic accuracy: N/A")
     print(f"\nCSV report saved to:\n{report_path}")
 
 
