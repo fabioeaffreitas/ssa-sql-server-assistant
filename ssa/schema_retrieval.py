@@ -4,6 +4,7 @@ SSA - Hybrid Schema Retrieval
 """
 
 import re
+import logging
 from pathlib import Path
 
 import chromadb
@@ -12,6 +13,7 @@ import chromadb
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CHROMA_PATH = ROOT_DIR / "data" / "chroma_db"
 COLLECTION_NAME = "ssa_schema"
+logger = logging.getLogger(__name__)
 
 
 def tokenize(text):
@@ -107,16 +109,7 @@ def search_schema(question, n_results=5):
         reverse=True,
     )
 
-    print(f"\nHybrid Schema Search: {question}")
-    print("-" * 60)
-
-    for candidate in candidates[:n_results]:
-        print(f"\nID: {candidate['id']}")
-        print(f"Final score: {candidate['final_score']:.4f}")
-        print(f"Semantic score: {candidate['semantic_score']:.4f}")
-        print(f"Keyword score: {candidate['keyword_score']:.4f}")
-        print(f"Name boost: {candidate['name_boost']:.4f}")
-        print(candidate["document"])
+    logger.info("Schema retrieval completed: candidates=%d", len(candidates[:n_results]))
 
     return candidates[:n_results]
 

@@ -195,7 +195,11 @@ Current safeguards include:
 
 SSA does not enforce a database account's permissions. Configure the SQL Server connection with a least-privilege account appropriate for the intended read-only scope. SQL validation is not a substitute for database permissions, query review, or production governance.
 
-The current local example enables `SQL_TRUST_SERVER_CERTIFICATE=yes`; production deployments should review certificate handling. The application also prints questions, generated SQL, and result rows to the console, so deployment environments should handle logs appropriately. No production multi-tenant isolation, audit system, or external telemetry is provided.
+The current local example enables `SQL_TRUST_SERVER_CERTIFICATE=yes`; production deployments should review certificate handling. No production multi-tenant isolation, audit system, or external telemetry is provided.
+
+## Logging
+
+SSA uses Python's standard-library logging locally. The default level is `INFO`; set `SSA_LOG_LEVEL` to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` in `.env` to change it. Normal application logging records operational categories, stages, row counts, and timings without logging raw user questions, generated SQL, schema contents, result rows, credentials, or tokens. Logging is local only; SSA sends no telemetry.
 
 ## Testing and evaluation
 

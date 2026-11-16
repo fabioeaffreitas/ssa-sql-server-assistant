@@ -5,6 +5,7 @@ Natural language -> schema -> SQL -> validation -> execution -> results.
 """
 
 from dataclasses import replace
+import logging
 import time
 
 from ssa.contracts import PipelineDiagnostics, QueryResult, ValidatedQuery
@@ -26,6 +27,7 @@ from ssa.sql_validator import SQLValidationError
 from ssa.db import ConfigurationError, DatabaseConnectionError
 
 
+logger = logging.getLogger(__name__)
 sql_server_adapter = SQLServerDatabaseAdapter()
 
 
@@ -85,8 +87,7 @@ def _legacy_result(result: QueryResult | dict) -> dict:
 def ask(question: str) -> dict:
     """Answer a natural-language question using the database."""
 
-    print("\nQUESTION:")
-    print(question)
+    logger.info("SSA request received")
 
     token_usage = None
     generation_succeeded = False
@@ -94,7 +95,7 @@ def ask(question: str) -> dict:
 
     try:
         try:
-            print("\nGENERATING SQL...")
+            logger.info("SQL generation started")
             pipeline_result = PipelineOrchestrator(
                 generate_sql,
                 sql_server_adapter,
@@ -119,27 +120,13 @@ def ask(question: str) -> dict:
 
         generation_succeeded = True
 
-        print("\nGENERATED SQL:")
-        print(sql)
-
-        print("\nVALIDATING SQL SYNTAX, DATABASE SCHEMA, AND EXECUTING SQL...")
         result = _legacy_result(pipeline_result.result)
-
-        print("\nRESULTS:")
-        for row in result["rows"]:
-            print(row)
-
-        print("\nRESULT SUMMARY:")
-        print(f"Returned rows: {result['row_count']}")
-        print(f"Maximum rows: {result['max_rows']}")
-
-        if result["truncated"]:
-            print(
-                f"WARNING: Results truncated. "
-                f"More than {result['max_rows']} rows are available."
-            )
-        else:
-            print("Results complete: no additional rows detected.")
+        logger.info(
+            "Query execution completed: rows=%d max_rows=%d truncated=%s",
+            result["row_count"],
+            result["max_rows"],
+            result["truncated"],
+        )
 
         generation = {"success": True}
         if token_usage:
@@ -163,7 +150,7 @@ def ask(question: str) -> dict:
 
     except SQLValidationError as exc:
         error = "SQL validation failed. Check the query syntax and referenced schema."
-        print(f"\nSQL VALIDATION ERROR: {type(exc).__name__}")
+        logger.warning("SQL validation failed: error_type=%s", type(exc).__name__)
 
         generation = {"success": generation_succeeded}
         if token_usage:
@@ -188,7 +175,7 @@ def ask(question: str) -> dict:
         }, diagnostics)
 
     except ConfigurationError:
-        print("\nSSA CONFIGURATION ERROR")
+        logger.error("SSA configuration validation failed")
 
         generation = {"success": generation_succeeded}
         if token_usage:
@@ -208,7 +195,7 @@ def ask(question: str) -> dict:
 
     except OllamaConnectionError:
         error = "Ollama is unavailable. Start Ollama and verify the local service."
-        print(f"\nSQL GENERATION ERROR: {error}")
+        logger.error("SQL generation failed: category=connection")
         return _finish_response(
             _generation_failure(question, error, token_usage),
             diagnostics,
@@ -216,7 +203,7 @@ def ask(question: str) -> dict:
 
     except OllamaGenerationTimeoutError:
         error = "Ollama generation timed out. Check Ollama or increase OLLAMA_REQUEST_TIMEOUT."
-        print(f"\nSQL GENERATION ERROR: {error}")
+        logger.error("SQL generation failed: category=timeout")
         return _finish_response(
             _generation_failure(question, error, token_usage),
             diagnostics,
@@ -224,14 +211,14 @@ def ask(question: str) -> dict:
 
     except OllamaGenerationError:
         error = "Ollama could not generate SQL. Verify the configured model is available."
-        print(f"\nSQL GENERATION ERROR: {error}")
+        logger.error("SQL generation failed: category=provider")
         return _finish_response(
             _generation_failure(question, error, token_usage),
             diagnostics,
         )
 
     except DatabaseConnectionError as exc:
-        print(f"\nSQL CONNECTION ERROR: {exc}")
+        logger.error("SQL connection failed")
 
         generation = {"success": generation_succeeded}
         if token_usage:
@@ -263,7 +250,7 @@ def ask(question: str) -> dict:
             error_type = "execution"
             error = "SQL execution failed. Check the database and generated query."
 
-        print(f"\nSQL EXECUTION ERROR: {error_type}")
+        logger.error("SQL execution failed: category=%s", error_type)
 
         generation = {"success": generation_succeeded}
         if token_usage:
@@ -288,7 +275,11 @@ def ask(question: str) -> dict:
     except Exception as exc:
         error_stage = "execution" if generation_succeeded else "generation"
         error = "SSA could not complete the request. Check the application logs."
-        print(f"\nSSA ERROR ({error_stage}): {type(exc).__name__}")
+        logger.error(
+            "SSA request failed: stage=%s error_type=%s",
+            error_stage,
+            type(exc).__name__,
+        )
 
         generation = {"success": generation_succeeded}
         if token_usage:

@@ -4,9 +4,13 @@ SSA - SQL Schema Validator
 Validates SQL table and column references against database metadata.
 """
 
+import logging
+
 from ssa.db import get_connection, get_query_timeout
 from ssa.sql_validator import validate_sql, SQLValidationError
 
+
+logger = logging.getLogger(__name__)
 
 def validate_sql_schema(sql: str, query_timeout: int | None = None) -> str:
     """
@@ -66,10 +70,8 @@ if __name__ == "__main__":
     ]
 
     for query in tests:
-        print("\nQuery:", query)
-
         try:
             validate_sql_schema(query)
-            print("VALID")
+            logger.info("SQL schema validation succeeded")
         except SQLValidationError as exc:
-            print("REJECTED:", exc)
+            logger.warning("SQL schema validation failed: error_type=%s", type(exc).__name__)
