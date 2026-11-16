@@ -1,0 +1,6 @@
+[project]
+name = "ssa-sql-server-assistant"
+version = "0.1.0"
+description = "Local AI-assisted, read-only SQL querying for Microsoft SQL Server."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"

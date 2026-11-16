@@ -6,6 +6,8 @@ SSA is an engineering project, not a general accuracy guarantee or a substitute 
 
 Repository: [github.com/fabioeaffreitas/ssa-sql-server-assistant](https://github.com/fabioeaffreitas/ssa-sql-server-assistant)
 
+Current development version: `0.1.0`. SSA is not a production-ready `1.0.0` release. The SQL Server MVP `1.0.0` milestone is planned after the CP34 release validation checkpoint. SSA follows a simple Semantic Versioning convention: `0.x.y` denotes development and stabilization releases, `1.0.0` denotes the validated SQL Server MVP, and later versions represent incremental features or compatibility updates. Install dependencies from `requirements.txt`; the project metadata file does not currently define a supported `pip install .` packaging workflow.
+
 ## Current capabilities
 
 - Natural-language SQL generation with Ollama and the configured local model.
