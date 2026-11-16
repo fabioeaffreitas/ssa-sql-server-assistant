@@ -4,6 +4,7 @@ import pandas as pd
 import os
 
 from ssa.assistant import ask
+from ssa.app_readiness import collect_readiness
 from ssa.logging_config import configure_logging
 
 
@@ -17,6 +18,22 @@ st.set_page_config(
 
 st.title("SQL Server AI Assistant")
 st.caption("Natural language to SQL Server queries — powered by local AI.")
+
+st.subheader("System readiness")
+readiness_columns = st.columns(3)
+for column, check in zip(readiness_columns, collect_readiness()):
+    with column:
+        if check.status == "Ready":
+            st.success(f"{check.name}: Ready")
+        elif check.status == "Inspection error":
+            st.error(f"{check.name}: Inspection error")
+        else:
+            st.warning(f"{check.name}: Needs attention")
+        st.caption(check.message)
+st.caption(
+    "These checks validate local configuration and schema-index availability. "
+    "They do not verify SQL Server or Ollama connectivity."
+)
 
 
 def initialise_token_tracker() -> None:

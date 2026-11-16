@@ -124,6 +124,8 @@ For Windows authentication, leave `SQL_TRUSTED_CONNECTION=yes`; the current conn
 
 `SQL_ENCRYPT` controls whether the ODBC connection encrypts traffic. `SQL_TRUST_SERVER_CERTIFICATE` controls certificate validation; it does not disable encryption. The local example uses `SQL_ENCRYPT=yes` and `SQL_TRUST_SERVER_CERTIFICATE=yes` to accommodate common self-signed development certificates. Trusting the server certificate bypasses normal certificate-chain validation, so production deployments should use `SQL_TRUST_SERVER_CERTIFICATE=no` with a certificate that the client can validate.
 
+The Streamlit interface includes a **System readiness** section for the schema index, SQL Server configuration, and Ollama configuration. It checks whether the local schema collection is populated and whether configuration values are valid; it does not verify SQL Server connectivity, the Ollama service, or model availability. If the schema index needs attention, run the schema export, context, and indexing commands in the section below before querying.
+
 ## Preparing the schema index
 
 The schema workflow exports metadata from SQL Server, creates readable schema context, and builds the persistent ChromaDB index. Run these commands from the repository root:
