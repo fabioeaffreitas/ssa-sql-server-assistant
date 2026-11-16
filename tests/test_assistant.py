@@ -5,6 +5,7 @@ import pytest
 
 from ssa import assistant
 from ssa.contracts import QueryResult
+from tests.fakes import FakeSQLGenerator, TimingAwareFakeRelationalDatabaseAdapter
 
 
 def assert_generation_call(mock, question):
@@ -346,3 +347,196 @@ def test_ask_reports_execution_connection_error(monkeypatch):
     assert response["error_stage"] == "execution"
     assert_generation_call(generate_sql, question)
     assert_execution_call(execute_sql, sql)
+
+
+def test_ask_with_reusable_fakes_preserves_success_contract_and_usage(monkeypatch):
+    generator = FakeSQLGenerator(
+        sql="SELECT 1",
+        usage={"model": "fake-model", "prompt_tokens": 4, "completion_tokens": 2},
+        timing_updates={"retrieval_ms": 1.0, "generation_ms": 2.0},
+    )
+    adapter = TimingAwareFakeRelationalDatabaseAdapter(
+        result=QueryResult(
+            columns=["value"],
+            rows=[{"value": 1}],
+            row_count=1,
+            max_rows=100,
+            truncated=False,
+        ),
+        timing_updates={"validation_ms": 3.0, "execution_ms": 4.0},
+    )
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+
+    response = assistant.ask("fake success")
+
+    assert set(response) == {
+        "question", "sql", "generation", "validation", "execution",
+        "result", "success", "diagnostics",
+    }
+    assert response["success"] is True
+    assert response["sql"] == "SELECT 1"
+    assert response["generation"]["usage"] == generator.usage
+    assert response["result"] == {
+        "columns": ["value"],
+        "rows": [{"value": 1}],
+        "row_count": 1,
+        "max_rows": 100,
+        "truncated": False,
+    }
+    assert response["diagnostics"] == {
+        "timings_ms": {
+            "retrieval_ms": 1.0,
+            "generation_ms": 2.0,
+            "validation_ms": 3.0,
+            "execution_ms": 4.0,
+            "total_ms": response["diagnostics"]["timings_ms"]["total_ms"],
+        },
+        "failure_stage": None,
+    }
+
+
+def test_ask_fake_injection_preserves_order_count_and_no_redundant_validation(
+    monkeypatch,
+):
+    generator = FakeSQLGenerator(sql="SELECT 42")
+    adapter = TimingAwareFakeRelationalDatabaseAdapter()
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+
+    assistant.ask("fake call order")
+
+    assert generator.calls[0]["question"] == "fake call order"
+    assert generator.calls[0]["return_usage"] is True
+    assert len(adapter.execution_calls) == 1
+    assert adapter.execution_calls[0][0] == assistant.ValidatedQuery("SELECT 42")
+    assert adapter.execution_calls[0][1] == 100
+    assert adapter.validation_calls == []
+
+
+def test_ask_fake_timing_dictionary_is_shared_and_request_local(monkeypatch):
+    generator = FakeSQLGenerator()
+    adapter = TimingAwareFakeRelationalDatabaseAdapter()
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+
+    first = assistant.ask("first")
+    second = assistant.ask("second")
+
+    assert generator.calls[0]["timings"] is adapter.timing_calls[0]
+    assert generator.calls[1]["timings"] is adapter.timing_calls[1]
+    assert generator.calls[0]["timings"] is not generator.calls[1]["timings"]
+    assert first["diagnostics"]["timings_ms"]["total_ms"] is not None
+    assert second["diagnostics"]["timings_ms"]["total_ms"] is not None
+
+
+def test_ask_fake_generation_failure_does_not_execute_database(monkeypatch):
+    generator = FakeSQLGenerator(
+        error=assistant.OllamaGenerationError("raw provider details")
+    )
+    adapter = TimingAwareFakeRelationalDatabaseAdapter()
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+
+    response = assistant.ask("fake generation failure")
+
+    assert response["success"] is False
+    assert response["error_stage"] == "generation"
+    assert response["diagnostics"]["failure_stage"] == "generation"
+    assert response["error"] == (
+        "Ollama could not generate SQL. Verify the configured model is available."
+    )
+    assert "PipelineExecutionError" not in str(response)
+    assert adapter.execution_calls == []
+
+
+def test_ask_fake_sql_validation_failure_preserves_validation_classification(
+    monkeypatch,
+):
+    generator = FakeSQLGenerator(
+        sql="SELECT invalid",
+        usage={"model": "fake-model", "total_tokens": 2},
+    )
+    adapter = TimingAwareFakeRelationalDatabaseAdapter(
+        execution_error=assistant.SQLValidationError("invalid schema")
+    )
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+
+    response = assistant.ask("fake validation failure")
+
+    assert response["success"] is False
+    assert response["error_stage"] == "validation"
+    assert response["diagnostics"]["failure_stage"] == "validation"
+    assert response["validation"]["success"] is False
+    assert response["result"] is None
+    assert response["generation"]["usage"] == generator.usage
+
+
+def test_ask_fake_connection_failure_keeps_generated_sql_and_usage(monkeypatch):
+    generator = FakeSQLGenerator(
+        sql="SELECT 1",
+        usage={"model": "fake-model", "total_tokens": 6},
+    )
+    adapter = TimingAwareFakeRelationalDatabaseAdapter(
+        execution_error=assistant.DatabaseConnectionError("connection unavailable")
+    )
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+
+    response = assistant.ask("fake connection failure")
+
+    assert response["success"] is False
+    assert response["error_stage"] == "connection"
+    assert response["diagnostics"]["failure_stage"] == "connection"
+    assert response["sql"] == "SELECT 1"
+    assert response["generation"]["usage"] == generator.usage
+    assert response["execution"] == {
+        "success": False,
+        "error_type": "connection",
+    }
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type", "message"),
+    [
+        (
+            assistant.SQLQueryTimeoutError("timeout"),
+            "timeout",
+            "SQL query timed out.",
+        ),
+        (
+            assistant.SQLQueryCancelledError("cancelled"),
+            "cancelled",
+            "SQL query was cancelled.",
+        ),
+        (
+            assistant.SQLExecutionError("execution failed"),
+            "execution",
+            "SQL execution failed.",
+        ),
+    ],
+)
+def test_ask_fake_execution_failures_preserve_public_classification(
+    monkeypatch,
+    failure,
+    error_type,
+    message,
+):
+    generator = FakeSQLGenerator(
+        sql="SELECT 1",
+        usage={"model": "fake-model", "total_tokens": 6},
+    )
+    adapter = TimingAwareFakeRelationalDatabaseAdapter(execution_error=failure)
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+
+    response = assistant.ask("fake execution failure")
+
+    assert response["success"] is False
+    assert response["error_stage"] == "execution"
+    assert response["diagnostics"]["failure_stage"] == "execution"
+    assert response["execution"]["error_type"] == error_type
+    assert response["sql"] == "SELECT 1"
+    assert response["generation"]["usage"] == generator.usage
+    assert message in response["error"]

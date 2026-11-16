@@ -100,9 +100,10 @@ class FakeRelationalDatabaseAdapter:
 class TimingAwareFakeRelationalDatabaseAdapter(FakeRelationalDatabaseAdapter):
     """Explicit timing-aware extension of the standard CP22 database fake."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, timing_updates=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.timing_calls: list[dict | None] = []
+        self.timing_updates = dict(timing_updates or {})
 
     def execute_read(
         self,
@@ -113,6 +114,8 @@ class TimingAwareFakeRelationalDatabaseAdapter(FakeRelationalDatabaseAdapter):
         timings: dict | None = None,
     ) -> QueryResult:
         self.timing_calls.append(timings)
+        if timings is not None:
+            timings.update(self.timing_updates)
         return super().execute_read(query, max_rows, timeout)
 
 

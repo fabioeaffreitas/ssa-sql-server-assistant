@@ -239,7 +239,7 @@ def ask(question: str) -> dict:
 
         return _finish_response({
             "question": question,
-            "sql": None,
+            "sql": sql if generation_succeeded else None,
             "generation": generation,
             "validation": None,
             "execution": {"success": False, "error_type": "connection"},
