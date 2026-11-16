@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dotenv import load_dotenv
 
 from ssa.contracts import GenerationRequest
+from ssa.chroma_retriever import ChromaSchemaRetriever
 from ssa.db import ConfigurationError
 from ssa.ollama_provider import (
     OllamaConnectionError as ProviderConnectionError,
@@ -28,6 +29,7 @@ load_dotenv()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_REQUEST_TIMEOUT = 300
+schema_retriever = ChromaSchemaRetriever()
 
 
 class OllamaConnectionError(RuntimeError):
@@ -181,12 +183,15 @@ def generate_sql(
     # Retrieve relevant schema documents.
     retrieval_started = time.perf_counter()
     try:
-        schema_results = search_schema(question, n_results=n_schema_results)
+        schema_results = schema_retriever.retrieve(
+            question,
+            limit=n_schema_results,
+        )
     finally:
         _add_timing(timings, "retrieval_ms", retrieval_started)
 
     schema_context = "\n\n".join(
-        candidate["document"] for candidate in schema_results
+        document.document for document in schema_results
     )
 
     prompt = f"""

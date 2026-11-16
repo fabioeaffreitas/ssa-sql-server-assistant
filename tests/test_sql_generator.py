@@ -1,12 +1,84 @@
 import pytest
 import ollama
 
+from ssa.contracts import SchemaDocument
 import ssa.sql_generator as generator
 
 
 def _stub_retrieval_and_validation(monkeypatch):
-    monkeypatch.setattr(generator, "search_schema", lambda question, n_results: [])
+    monkeypatch.setattr(
+        generator.schema_retriever,
+        "retrieve",
+        lambda question, limit: [],
+    )
     monkeypatch.setattr(generator, "validate_sql", lambda sql: sql)
+
+
+def test_generate_sql_uses_retriever_and_preserves_schema_context(monkeypatch):
+    calls = []
+    captured = {}
+
+    class FakeRetriever:
+        def retrieve(self, question, limit):
+            calls.append((question, limit))
+            return [
+                SchemaDocument("table:First", "FIRST DOCUMENT"),
+                SchemaDocument("table:Second", "SECOND DOCUMENT"),
+            ]
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            return {"response": "SELECT 1"}
+
+    monkeypatch.setattr(generator, "schema_retriever", FakeRetriever())
+    monkeypatch.setattr(generator, "validate_sql", lambda sql: sql)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FakeClient)
+
+    assert generator.generate_sql("test question", n_schema_results=2) == "SELECT 1"
+
+    assert calls == [("test question", 2)]
+    prompt_context = captured["prompt"].split(
+        "DATABASE SCHEMA:\n",
+        1,
+    )[1].split("\n\nUSER QUESTION:", 1)[0]
+    assert prompt_context == "FIRST DOCUMENT\n\nSECOND DOCUMENT"
+
+
+def test_generate_sql_preserves_empty_retrieval_context(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            return {"response": "SELECT 1"}
+
+    _stub_retrieval_and_validation(monkeypatch)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FakeClient)
+
+    assert generator.generate_sql("test") == "SELECT 1"
+    prompt_context = captured["prompt"].split(
+        "DATABASE SCHEMA:\n",
+        1,
+    )[1].split("\n\nUSER QUESTION:", 1)[0]
+    assert prompt_context == ""
+
+
+def test_generate_sql_propagates_retrieval_errors(monkeypatch):
+    class FailingRetriever:
+        def retrieve(self, question, limit):
+            raise RuntimeError("retrieval unavailable")
+
+    monkeypatch.setattr(generator, "schema_retriever", FailingRetriever())
+
+    with pytest.raises(RuntimeError, match="retrieval unavailable"):
+        generator.generate_sql("test")
 
 
 def test_uses_configured_positive_request_timeout(monkeypatch):
