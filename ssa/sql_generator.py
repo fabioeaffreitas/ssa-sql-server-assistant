@@ -9,10 +9,11 @@ import re
 import socket
 import time
 from collections.abc import Mapping
+from typing import Callable
 
 from dotenv import load_dotenv
 
-from ssa.contracts import GenerationRequest
+from ssa.contracts import GenerationRequest, LLMProvider, SchemaRetriever
 from ssa.chroma_retriever import ChromaSchemaRetriever
 from ssa.db import ConfigurationError
 from ssa.ollama_provider import (
@@ -30,6 +31,9 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_REQUEST_TIMEOUT = 300
 schema_retriever = ChromaSchemaRetriever()
+
+PromptBuilder = Callable[[GenerationRequest], str]
+ProviderFactory = Callable[[PromptBuilder, int], LLMProvider]
 
 
 class OllamaConnectionError(RuntimeError):
@@ -170,20 +174,55 @@ def repair_terminal_top(sql: str) -> str:
     )
 
 
+def _default_provider_factory(
+    prompt_builder: PromptBuilder,
+    request_timeout: int,
+) -> LLMProvider:
+    """Construct the configured Ollama provider without contacting Ollama."""
+
+    return OllamaProvider(
+        prompt_builder,
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        request_timeout=request_timeout,
+    )
+
+
 def generate_sql(
     question: str,
     n_schema_results: int = 5,
     return_usage: bool = False,
     timings: dict | None = None,
 ) -> str | tuple[str, dict]:
-    """Generate SQL Server T-SQL using retrieved database schema."""
+    """Generate SQL Server T-SQL using the active production dependencies."""
+
+    return _generate_sql_with_dependencies(
+        question,
+        n_schema_results,
+        return_usage,
+        timings,
+        retriever=schema_retriever,
+        provider_factory=_default_provider_factory,
+    )
+
+
+def _generate_sql_with_dependencies(
+    question: str,
+    n_schema_results: int,
+    return_usage: bool,
+    timings: dict | None,
+    *,
+    retriever: SchemaRetriever,
+    provider_factory: ProviderFactory,
+) -> str | tuple[str, dict]:
+    """Generate SQL with explicitly injected retrieval and LLM dependencies."""
 
     request_timeout = get_ollama_request_timeout()
 
     # Retrieve relevant schema documents.
     retrieval_started = time.perf_counter()
     try:
-        schema_results = schema_retriever.retrieve(
+        schema_results = retriever.retrieve(
             question,
             limit=n_schema_results,
         )
@@ -276,12 +315,7 @@ T-SQL QUERY:
 
     generation_started = time.perf_counter()
     try:
-        provider = OllamaProvider(
-            lambda request: prompt,
-            model=OLLAMA_MODEL,
-            base_url=OLLAMA_BASE_URL,
-            request_timeout=request_timeout,
-        )
+        provider = provider_factory(lambda request: prompt, request_timeout)
         generation_result = provider.generate(
             GenerationRequest(
                 question=question,
