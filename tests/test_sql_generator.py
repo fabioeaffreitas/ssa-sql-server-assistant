@@ -54,6 +54,57 @@ def test_accepts_typed_ollama_response_and_reads_usage(monkeypatch):
     }
 
 
+def test_legacy_usage_recomputes_total_and_preserves_zero_defaults(monkeypatch):
+    responses = [
+        {
+            "response": "SELECT 1",
+            "prompt_eval_count": 100,
+            "eval_count": 25,
+            "total_tokens": 999,
+        },
+        {"response": "SELECT 1"},
+        {
+            "response": "SELECT 1",
+            "prompt_eval_count": 0,
+            "eval_count": 0,
+            "total_tokens": 0,
+        },
+    ]
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def generate(self, **kwargs):
+            return responses.pop(0)
+
+    _stub_retrieval_and_validation(monkeypatch)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FakeClient)
+
+    _, reported_usage = generator.generate_sql("test", return_usage=True)
+    _, missing_usage = generator.generate_sql("test", return_usage=True)
+    _, zero_usage = generator.generate_sql("test", return_usage=True)
+
+    assert reported_usage == {
+        "model": "qwen2.5-coder:7b",
+        "prompt_tokens": 100,
+        "completion_tokens": 25,
+        "total_tokens": 125,
+    }
+    assert missing_usage == {
+        "model": "qwen2.5-coder:7b",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    assert zero_usage == {
+        "model": "qwen2.5-coder:7b",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
 def test_records_retrieval_generation_and_validation_milliseconds(monkeypatch):
     clock = iter([10.0, 10.125, 20.0, 20.25, 30.0, 30.05])
 

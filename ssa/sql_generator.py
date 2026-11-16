@@ -317,14 +317,15 @@ T-SQL QUERY:
         usage = generation_result.usage
         prompt_tokens = usage.prompt_tokens if usage else None
         completion_tokens = usage.completion_tokens if usage else None
-        total_tokens = usage.total_tokens if usage else None
+        legacy_prompt_tokens = prompt_tokens if prompt_tokens is not None else 0
+        legacy_completion_tokens = (
+            completion_tokens if completion_tokens is not None else 0
+        )
         return validated_sql, {
             "model": (usage.model if usage and usage.model else OLLAMA_MODEL),
-            "prompt_tokens": prompt_tokens if prompt_tokens is not None else 0,
-            "completion_tokens": (
-                completion_tokens if completion_tokens is not None else 0
-            ),
-            "total_tokens": total_tokens if total_tokens is not None else 0,
+            "prompt_tokens": legacy_prompt_tokens,
+            "completion_tokens": legacy_completion_tokens,
+            "total_tokens": legacy_prompt_tokens + legacy_completion_tokens,
         }
     return validated_sql
 
