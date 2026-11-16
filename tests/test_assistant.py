@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from ssa import assistant
+from ssa.contracts import QueryResult
 
 
 def assert_generation_call(mock, question):
@@ -15,7 +16,7 @@ def assert_generation_call(mock, question):
 
 def assert_execution_call(mock, sql):
     mock.assert_called_once()
-    assert mock.call_args.args == (sql,)
+    assert mock.call_args.args == (assistant.ValidatedQuery(sql),)
     assert set(mock.call_args.kwargs["timings"]) == set(assistant.TIMING_KEYS)
 
 
@@ -34,7 +35,7 @@ def test_ask_success(monkeypatch):
     generate_sql = Mock(return_value=expected_sql)
     execute_sql = Mock(return_value=expected_result)
     monkeypatch.setattr(assistant, "generate_sql", generate_sql)
-    monkeypatch.setattr(assistant, "execute_sql", execute_sql)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", execute_sql)
 
     response = assistant.ask(question)
 
@@ -56,6 +57,39 @@ def test_ask_success(monkeypatch):
     assert "error" not in response
     assert_generation_call(generate_sql, question)
     assert_execution_call(execute_sql, expected_sql)
+
+
+def test_ask_uses_adapter_execution_without_redundant_validation(monkeypatch):
+    execute_read = Mock(return_value=QueryResult(
+        columns=["value"],
+        rows=[{"value": 1}],
+        row_count=1,
+        max_rows=100,
+        truncated=False,
+    ))
+    validate_read_query = Mock()
+    database_adapter = Mock(
+        execute_read=execute_read,
+        validate_read_query=validate_read_query,
+    )
+    monkeypatch.setattr(assistant, "generate_sql", Mock(return_value="SELECT 1"))
+    monkeypatch.setattr(assistant, "sql_server_adapter", database_adapter)
+
+    response = assistant.ask("Test adapter activation")
+
+    assert response["success"] is True
+    assert response["result"] == {
+        "columns": ["value"],
+        "rows": [{"value": 1}],
+        "row_count": 1,
+        "max_rows": 100,
+        "truncated": False,
+    }
+    execute_read.assert_called_once_with(
+        assistant.ValidatedQuery("SELECT 1"),
+        timings=response["diagnostics"]["timings_ms"] | {},
+    )
+    validate_read_query.assert_not_called()
 
 
 def test_ask_collects_provider_neutral_timings(monkeypatch):
@@ -80,7 +114,7 @@ def test_ask_collects_provider_neutral_timings(monkeypatch):
 
     monkeypatch.setattr(assistant.time, "perf_counter", lambda: next(clock))
     monkeypatch.setattr(assistant, "generate_sql", fake_generate)
-    monkeypatch.setattr(assistant, "execute_sql", fake_execute)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", fake_execute)
 
     response = assistant.ask("Test timing")
 
@@ -127,7 +161,7 @@ def test_ask_validation_error(monkeypatch):
         side_effect=assistant.SQLValidationError("Invalid column")
     )
     monkeypatch.setattr(assistant, "generate_sql", generate_sql)
-    monkeypatch.setattr(assistant, "execute_sql", execute_sql)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", execute_sql)
 
     response = assistant.ask(question)
 
@@ -161,7 +195,7 @@ def test_ask_schema_validation_error_is_reported_as_validation(monkeypatch):
         side_effect=assistant.SQLValidationError("Invalid column in schema")
     )
     monkeypatch.setattr(assistant, "generate_sql", generate_sql)
-    monkeypatch.setattr(assistant, "execute_sql", execute_sql)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", execute_sql)
 
     response = assistant.ask(question)
 
@@ -182,7 +216,7 @@ def test_ask_generation_error(monkeypatch):
     generate_sql = Mock(side_effect=RuntimeError("Model unavailable"))
     execute_sql = Mock()
     monkeypatch.setattr(assistant, "generate_sql", generate_sql)
-    monkeypatch.setattr(assistant, "execute_sql", execute_sql)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", execute_sql)
 
     response = assistant.ask(question)
 
@@ -242,7 +276,7 @@ def test_ask_reports_execution_timeout_after_validation(monkeypatch):
         side_effect=assistant.SQLQueryTimeoutError("SQL query timed out.")
     )
     monkeypatch.setattr(assistant, "generate_sql", generate_sql)
-    monkeypatch.setattr(assistant, "execute_sql", execute_sql)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", execute_sql)
 
     response = assistant.ask(question)
 
@@ -269,7 +303,7 @@ def test_ask_reports_execution_error_after_validation(monkeypatch):
         side_effect=assistant.SQLExecutionError("Query execution failed")
     )
     monkeypatch.setattr(assistant, "generate_sql", generate_sql)
-    monkeypatch.setattr(assistant, "execute_sql", execute_sql)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", execute_sql)
 
     response = assistant.ask(question)
 
@@ -299,7 +333,7 @@ def test_ask_reports_execution_connection_error(monkeypatch):
         side_effect=assistant.SQLExecutionConnectionError("Connection unavailable")
     )
     monkeypatch.setattr(assistant, "generate_sql", generate_sql)
-    monkeypatch.setattr(assistant, "execute_sql", execute_sql)
+    monkeypatch.setattr(assistant.sql_server_adapter, "execute_read", execute_sql)
 
     response = assistant.ask(question)
 

@@ -6,6 +6,8 @@ Natural language -> schema -> SQL -> validation -> execution -> results.
 
 import time
 
+from ssa.contracts import QueryResult, ValidatedQuery
+from ssa.sql_server_adapter import SQLServerDatabaseAdapter
 from ssa.sql_generator import generate_sql
 from ssa.sql_generator import (
     OllamaConnectionError,
@@ -17,7 +19,6 @@ from ssa.sql_executor import (
     SQLExecutionError,
     SQLQueryCancelledError,
     SQLQueryTimeoutError,
-    execute_sql,
 )
 from ssa.sql_validator import SQLValidationError
 from ssa.db import ConfigurationError, DatabaseConnectionError
@@ -30,6 +31,9 @@ TIMING_KEYS = (
     "execution_ms",
     "total_ms",
 )
+
+
+sql_server_adapter = SQLServerDatabaseAdapter()
 
 
 def _new_timings() -> dict:
@@ -47,6 +51,21 @@ def _finish_response(response: dict, timings: dict, started_at: float) -> dict:
         "failure_stage": response.get("error_stage"),
     }
     return response
+
+
+def _legacy_result(result: QueryResult | dict) -> dict:
+    """Convert the typed database result to the existing public shape."""
+
+    if isinstance(result, dict):
+        return result
+
+    return {
+        "columns": result.columns,
+        "rows": result.rows,
+        "row_count": result.row_count,
+        "max_rows": result.max_rows,
+        "truncated": result.truncated,
+    }
 
 
 def ask(question: str) -> dict:
@@ -91,12 +110,11 @@ def ask(question: str) -> dict:
         print(sql)
 
         print("\nVALIDATING SQL SYNTAX, DATABASE SCHEMA, AND EXECUTING SQL...")
-        try:
-            result = execute_sql(sql, timings=timings)
-        except TypeError as exc:
-            if "timings" not in str(exc):
-                raise
-            result = execute_sql(sql)
+        typed_result = sql_server_adapter.execute_read(
+            ValidatedQuery(sql),
+            timings=timings,
+        )
+        result = _legacy_result(typed_result)
 
         print("\nRESULTS:")
         for row in result["rows"]:

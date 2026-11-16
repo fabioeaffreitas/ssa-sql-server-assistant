@@ -1,8 +1,4 @@
-"""Inactive SQL Server implementation of the relational adapter contract.
-
-The active assistant continues to use ``ssa.sql_executor.execute_sql``
-directly. This adapter is a compatibility wrapper for a later migration.
-"""
+"""SQL Server implementation of the relational adapter contract."""
 
 from ssa.contracts import QueryResult, RelationalDatabaseAdapter, ValidatedQuery
 from ssa.sql_executor import execute_sql
@@ -27,14 +23,19 @@ class SQLServerDatabaseAdapter:
         query: ValidatedQuery,
         max_rows: int = 100,
         timeout: int | None = None,
+        *,
+        timings: dict | None = None,
     ) -> QueryResult:
         """Execute through the existing executor, including its validation."""
 
-        result = execute_sql(
-            query.sql,
-            max_rows=max_rows,
-            query_timeout=timeout,
-        )
+        execute_kwargs = {
+            "max_rows": max_rows,
+            "query_timeout": timeout,
+        }
+        if timings is not None:
+            execute_kwargs["timings"] = timings
+
+        result = execute_sql(query.sql, **execute_kwargs)
         return QueryResult(
             columns=result["columns"],
             rows=result["rows"],

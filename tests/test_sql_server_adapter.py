@@ -118,6 +118,30 @@ def test_execute_read_forwards_default_max_rows_and_timeout(monkeypatch):
     )
 
 
+def test_execute_read_forwards_pipeline_timings(monkeypatch):
+    execute = Mock(return_value={
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "max_rows": 100,
+        "truncated": False,
+    })
+    monkeypatch.setattr(adapter_module, "execute_sql", execute)
+    timings = {"validation_ms": None, "execution_ms": None}
+
+    adapter_module.SQLServerDatabaseAdapter().execute_read(
+        ValidatedQuery("SELECT 1"),
+        timings=timings,
+    )
+
+    execute.assert_called_once_with(
+        "SELECT 1",
+        max_rows=100,
+        query_timeout=None,
+        timings=timings,
+    )
+
+
 @pytest.mark.parametrize(
     "error",
     [
