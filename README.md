@@ -1,55 +1,66 @@
 # SSA — SQL Server AI Assistant
 
-SSA is an open-source, local AI assistant that turns natural-language questions into validated, read-only SQL queries. The current implementation targets SQL Server 2025 and the AdventureWorks2025 database, using Ollama and Qwen2.5-Coder for local SQL generation.
+SSA is a local RAG-powered assistant that translates natural-language questions into validated, read-only SQL Server T-SQL queries. The current workflow targets SQL Server 2025 and the AdventureWorks2025 sample database, using Ollama with Qwen2.5-Coder for local SQL generation and ChromaDB for schema retrieval.
 
-The project explores a practical architecture for schema-aware Text-to-SQL: retrieve relevant database metadata, ground generation with that context, validate the generated query, and execute it through a bounded read-only workflow.
+SSA is an engineering project, not a general accuracy guarantee or a substitute for database permissions, query review, or production governance.
 
 Repository: [github.com/fabioeaffreitas/ssa-sql-server-assistant](https://github.com/fabioeaffreitas/ssa-sql-server-assistant)
 
-## Why SSA?
-
-Traditional database tools require users to know table names, column names, joins, and SQL syntax. SSA provides a natural-language interface while keeping the database boundary explicit:
-
-- schema context is retrieved before generation;
-- generated SQL is checked before execution;
-- only single-statement `SELECT` queries are accepted;
-- database access is bounded by connection/query timeouts and a 100-row result limit;
-- local inference keeps the current development workflow on the user's machine.
-
-SSA is an engineering project and not a replacement for database permissions, query review, or production governance.
-
 ## Current capabilities
 
-- Natural-language-to-T-SQL generation.
-- Schema-aware retrieval using ChromaDB and RAG context.
-- Local Ollama integration with Qwen2.5-Coder.
-- SQLGlot-based SELECT-only and single-statement validation.
-- SQL Server schema compilation before execution.
-- SQL Server connection and query timeout handling.
-- Result retrieval capped at 100 rows, with truncation detection.
-- Safe configuration validation and user-facing error classification.
-- Streamlit user interface with token-usage tracking.
-- Provider-neutral pipeline observability reports retrieval, generation, validation, execution, and total timings, together with the failure stage for unsuccessful requests.
+- Natural-language SQL generation with Ollama and the configured local model.
+- ChromaDB-backed schema retrieval with hybrid semantic and keyword ranking, including current domain-specific ranking boosts.
+- SQL Server/T-SQL prompt construction grounded in retrieved schema context.
+- SQL cleanup, Markdown fence removal, and repair of misplaced terminal `TOP N` clauses.
+- SQLGlot T-SQL parsing with single-statement, SELECT-only, and `SELECT INTO` restrictions.
+- SQL Server schema compilation using `NOEXEC` before query execution.
+- Bounded SQL Server execution with configurable connection/query timeouts and a 100-row default result limit.
+- Truncation detection and structured result conversion for Streamlit and evaluation scripts.
+- Ollama token-usage reporting with model, prompt-token, completion-token, and total-token fields.
+- Provider-neutral pipeline diagnostics for retrieval, generation, validation, execution, and total timings, plus failure-stage reporting.
+- Streamlit interface for generated SQL, validation state, diagnostics, usage tracking, and bounded results.
+
+The implemented database workflow is SQL Server-specific. PostgreSQL, MySQL, MongoDB, and other NoSQL platforms are not currently supported.
 
 ## Architecture
+
+The active request path is:
 
 ```mermaid
 flowchart LR
     User[User question] --> UI[Streamlit app]
-    UI --> Assistant[assistant.ask]
-    Assistant --> Retrieval[Schema retrieval]
-    Retrieval --> Chroma[(ChromaDB schema index)]
-    Retrieval --> Generator[SQL generator]
-    Generator --> Ollama[Ollama<br/>Qwen2.5-Coder]
-    Generator --> Syntax[SQLGlot<br/>SELECT-only validation]
-    Syntax --> Executor[SQL executor]
-    Executor --> Compile[Schema validation<br/>SQL Server NOEXEC]
-    Compile --> SQL[(SQL Server 2025<br/>AdventureWorks2025)]
-    Executor --> Results[Bounded results]
-    Results --> UI
+    UI --> Ask[assistant.ask]
+    Ask --> Pipeline[PipelineOrchestrator]
+    Pipeline --> Generator[SQL generation]
+    Generator --> Retriever[SchemaRetriever contract]
+    Retriever --> Chroma[ChromaSchemaRetriever]
+    Chroma --> Index[(ChromaDB index)]
+    Generator --> Provider[LLMProvider contract]
+    Provider --> Ollama[OllamaProvider]
+    Generator --> Repair[SQL cleanup and repair]
+    Repair --> Validation[SQLGlot T-SQL validation]
+    Pipeline --> Database[RelationalDatabaseAdapter contract]
+    Database --> SQLAdapter[SQLServerDatabaseAdapter]
+    SQLAdapter --> SQLValidation[SQL Server NOEXEC validation]
+    SQLValidation --> SQL[(SQL Server 2025 / AdventureWorks2025)]
+    SQL --> Results[Bounded QueryResult]
+    Results --> Pipeline
+    Pipeline --> Response[Legacy response dictionary]
+    Response --> UI
 ```
 
-The active retrieval path is implemented in `ssa/schema_retrieval.py`. `ssa/schema_search.py` is a separate semantic-search utility and is not part of the active assistant path.
+The provider-neutral internal contracts are defined in `ssa/contracts.py`:
+
+- `LLMProvider` describes relational query generation.
+- `SchemaRetriever` describes question-based schema retrieval.
+- `RelationalDatabaseAdapter` separates validation and bounded read execution.
+- `GenerationRequest`, `GenerationResult`, `UsageMetadata`, `QueryResult`, and `PipelineDiagnostics` carry typed internal data.
+
+The active implementations are Ollama, ChromaDB, and SQL Server. The contracts are internal seams; they do not imply that all database platforms share the same query or execution semantics.
+
+The active ChromaDB path is implemented by `ChromaSchemaRetriever` and delegates to the hybrid retrieval logic in `ssa/schema_retrieval.py`. `ssa/schema_search.py` is a separate semantic-search utility and is not used by the active assistant pipeline.
+
+Deterministic test implementations are available in `tests/fakes.py`, including fake LLM providers, schema retrievers, SQL generators, and relational database adapters.
 
 ## Technology stack
 
@@ -60,7 +71,7 @@ The active retrieval path is implemented in `ssa/schema_retrieval.py`. `ssa/sche
 | Ollama | Local LLM runtime |
 | Qwen2.5-Coder 7B | Current SQL-generation model |
 | ChromaDB | Persistent schema retrieval index |
-| SQLGlot | SQL parsing and SELECT-only validation |
+| SQLGlot | T-SQL parsing and SELECT-only validation |
 | pyodbc | SQL Server connectivity |
 | ODBC Driver 18 for SQL Server | Current SQL Server driver |
 | SQL Server 2025 | Current database platform |
@@ -69,7 +80,7 @@ The active retrieval path is implemented in `ssa/schema_retrieval.py`. `ssa/sche
 
 ## Installation
 
-SSA currently requires Python 3.12, SQL Server 2025 with AdventureWorks2025, ODBC Driver 18 for SQL Server, and a locally installed Ollama runtime with the configured model available. Those external services and drivers are not installed by this repository.
+SSA requires Python 3.12, SQL Server 2025 with AdventureWorks2025, ODBC Driver 18 for SQL Server, and a local Ollama installation with the configured model available. These external services and drivers are not installed by this repository.
 
 From PowerShell:
 
@@ -81,11 +92,13 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env`, then edit the values for the local environment. Do not commit `.env` or credentials.
+Copy `.env.example` to `.env` and edit the values for the local environment. Do not commit `.env`, credentials, or generated `data/` and `reports/` artifacts.
+
+Install or start Ollama separately, then make the configured model available. The current default model is `qwen2.5-coder:7b`.
 
 ## Configuration
 
-The repository provides `.env.example` with local-development defaults. Configuration names supported by the current code include:
+Configuration is loaded from environment variables, including a local `.env` file when present. The supported names and defaults are:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
@@ -96,118 +109,147 @@ The repository provides `.env.example` with local-development defaults. Configur
 | `SQL_USERNAME` | SQL authentication username | Required when trusted connection is disabled |
 | `SQL_PASSWORD` | SQL authentication password | Required when trusted connection is disabled |
 | `SQL_ENCRYPT` | ODBC encryption toggle | `yes` |
-| `SQL_TRUST_SERVER_CERTIFICATE` | Whether to trust the server certificate | `yes` in the current local default |
-| `SQL_CONNECTION_TIMEOUT` | Connection timeout in seconds | `10` |
+| `SQL_TRUST_SERVER_CERTIFICATE` | Whether to trust the server certificate | `yes` |
+| `SQL_CONNECTION_TIMEOUT` | SQL Server connection timeout in seconds | `10` |
 | `SQL_QUERY_TIMEOUT` | SQL query timeout in seconds | `30` |
-| `OLLAMA_BASE_URL` | Local LLM service URL | `http://localhost:11434` |
+| `OLLAMA_BASE_URL` | Ollama service URL | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Model name passed to Ollama | `qwen2.5-coder:7b` |
-| `OLLAMA_REQUEST_TIMEOUT` | LLM request timeout in seconds | `300` |
+| `OLLAMA_REQUEST_TIMEOUT` | Ollama request timeout in seconds | `300` |
 
 Boolean settings accept `yes`, `no`, `true`, `false`, `1`, or `0`. Timeout settings must be positive integers.
 
-For SQL authentication, set `SQL_TRUSTED_CONNECTION=no` and provide `SQL_USERNAME` and `SQL_PASSWORD` through the local environment. Never place real credentials in documentation, source control, or issue reports.
+For SQL authentication, set `SQL_TRUSTED_CONNECTION=no` and provide `SQL_USERNAME` and `SQL_PASSWORD` through the local environment. Never place real credentials in documentation or source control.
 
 ## Preparing the schema index
 
-The current schema workflow targets SQL Server and writes generated artifacts under `data/`:
+The schema workflow exports metadata from SQL Server, creates readable schema context, and builds the persistent ChromaDB index. Run these commands from the repository root:
 
 ```powershell
-python -m ssa.schema_export
-python -m ssa.schema_context
-python -m ssa.schema_index
+.\.venv\Scripts\python.exe -m ssa.schema_export
+.\.venv\Scripts\python.exe -m ssa.schema_context
+.\.venv\Scripts\python.exe -m ssa.schema_index
 ```
 
-The export step requires a working SQL Server connection. The generated metadata, context, and ChromaDB files are local artifacts and are not part of the source-controlled application.
+The default ChromaDB persistence path is `data/chroma_db` and the active collection is `ssa_schema`. The export step requires a working SQL Server connection. Generated metadata, context, and ChromaDB files are local artifacts and are not source-controlled application code.
 
 ## Running SSA
 
 Start the Streamlit application with:
 
 ```powershell
-streamlit run app.py
+.\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-The main application asks questions about AdventureWorks2025, displays generated SQL, reports validation status, and renders bounded results.
+The interface asks questions about AdventureWorks2025, displays generated SQL, reports validation and execution status, shows diagnostics, and renders bounded results.
+
+## Diagnostics and usage
+
+Successful and failed assistant responses include a `diagnostics` object with this structure:
+
+```python
+{
+    "timings_ms": {
+        "retrieval_ms":  ...,
+        "generation_ms": ...,
+        "validation_ms": ...,
+        "execution_ms":  ...,
+        "total_ms":      ...,
+    },
+    "failure_stage": None,  # or generation/validation/connection/execution/configuration
+}
+```
+
+Generation responses may also contain:
+
+```python
+{
+    "usage": {
+        "model": "qwen2.5-coder:7b",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+}
+```
+
+Missing token counts use zero at the public compatibility boundary. Reported totals are calculated from prompt plus completion tokens.
+
+## Security and operational boundaries
+
+Current safeguards include:
+
+- SQLGlot T-SQL parsing.
+- Exactly one SQL statement per generated query.
+- SELECT-only restrictions.
+- Rejection of `SELECT INTO`.
+- SQL Server schema compilation with `NOEXEC` before execution.
+- Separate validation and execution connections in the SQL Server workflow.
+- Connection and query timeouts.
+- A default maximum of 100 returned rows with one-extra-row truncation detection.
+- Cursor and connection cleanup with rollback handling.
+- Sanitized user-facing error messages for provider and driver failures.
+
+SSA does not enforce a database account's permissions. Configure the SQL Server connection with a least-privilege account appropriate for the intended read-only scope. SQL validation is not a substitute for database permissions, query review, or production governance.
+
+The current local example enables `SQL_TRUST_SERVER_CERTIFICATE=yes`; production deployments should review certificate handling. The application also prints questions, generated SQL, and result rows to the console, so deployment environments should handle logs appropriately. No production multi-tenant isolation, audit system, or external telemetry is provided.
 
 ## Testing and evaluation
 
-The default deterministic suite does not require SQL Server or Ollama:
+Run the deterministic suite with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q -m "not integration"
 ```
 
-Integration tests require the configured external services:
+These tests use deterministic fakes for LLM providers, schema retrievers, SQL generators, and database adapters. They do not require Ollama, ChromaDB, SQL Server, or pyodbc connections.
+
+At CP27 completion, the deterministic suite passed 154 tests; this count is a milestone and may increase as coverage grows.
+
+Run integration tests separately when the local services and database are configured:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -m integration
 ```
 
-The live evaluation script runs the current 14-question AdventureWorks2025 evaluation set and writes a timestamped CSV under `reports/`:
+The live evaluation script runs the fixed 14-question AdventureWorks2025 evaluation set and writes a timestamped CSV under `reports/`:
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.run_live_sql_eval
 ```
 
-The verified project result is **14/14 successful end-to-end evaluations** on the current AdventureWorks2025 evaluation set. This is a project-specific evaluation result, not a general accuracy guarantee.
+The verified result is **14/14 successful end-to-end evaluations** on that fixed AdventureWorks2025 set. This is a project-specific evaluation result, not a general accuracy guarantee.
 
-## Security and operational boundaries
-
-Current protections include:
-
-- SELECT-only, single-statement SQL validation before execution.
-- SQL Server schema compilation before the query is run.
-- Connection and query timeouts.
-- A maximum of 100 returned rows.
-- Configuration validation for connection settings and timeout values.
-- Sanitized user-facing errors that avoid exposing passwords, connection strings, or raw driver details.
-- Local Ollama inference in the current implementation.
-
-These protections have limitations:
-
-- SQL validation is not a substitute for least-privilege database permissions.
-- The database account should be restricted to the intended read-only scope.
-- `SQL_TRUST_SERVER_CERTIFICATE=yes` is convenient for the current local setup but should be reviewed for production use.
-- Generated SQL should still be reviewed for important or sensitive workloads.
-- The current application prints diagnostic information such as questions, generated SQL, and result rows to the console during execution; deployment environments should handle logs appropriately.
-- No production multi-tenant isolation, audit system, or external telemetry is provided.
-
-## Roadmap
+## Project status and roadmap
 
 ### Implemented
 
-- SQL Server and AdventureWorks2025 support.
-- Ollama-based local generation.
-- ChromaDB schema retrieval and RAG grounding.
-- SELECT-only validation and bounded execution.
-- Streamlit interface and deterministic test coverage.
-- CP21.6 provider-neutral pipeline observability, including stage timings and failure-stage diagnostics.
+- SQL Server 2025 and AdventureWorks2025 workflow.
+- Local Ollama generation with Qwen2.5-Coder.
+- ChromaDB schema retrieval and hybrid ranking.
+- SQL Server/T-SQL prompt construction, SQL cleanup, and repair.
+- SQLGlot SELECT-only validation and SQL Server NOEXEC schema validation.
+- Bounded SQL Server execution with timeout, cancellation, cleanup, and truncation handling.
+- Streamlit interface and legacy response compatibility.
+- CP21.6 provider-neutral pipeline timings and failure-stage diagnostics.
+- CP22–CP27 provider-neutral contracts, adapters, orchestration, injectable SQL-generation seams, reusable fakes, and deterministic end-to-end regression tests.
 
 ### Planned
 
-- Provider abstraction for additional LLM integrations:
-  - OpenAI
-  - Anthropic Claude
-  - Google Gemini
-- Database adapters for PostgreSQL and MySQL.
-- Exploratory support for MongoDB and other NoSQL systems.
-- More formal provider and database capability interfaces.
-- Broader integration and regression coverage across providers and database platforms.
+- Additional LLM providers: OpenAI, Anthropic Claude, and Google Gemini.
+- Relational adapters for PostgreSQL and MySQL.
+- Exploratory MongoDB and other NoSQL integrations with separate execution semantics.
+- Broader cross-provider and cross-database integration coverage.
 
-The planned integrations are architectural goals only; they are not implemented in the current repository.
+The planned integrations are architectural goals only. They are not implemented or supported by the current application.
 
 ## Contributing
 
-Contributions are welcome. Before opening a pull request:
+Before opening a pull request:
 
 1. Keep credentials, `.env`, `data/`, and `reports/` out of commits.
-2. Preserve the SELECT-only safety policy, timeout handling, and 100-row limit.
+2. Preserve SELECT-only validation, timeout handling, cleanup, and the 100-row limit.
 3. Add deterministic tests for behavior changes.
-4. Run the default test suite and describe any required external services.
+4. Run the deterministic suite and describe any required external services.
 5. Keep provider- and database-specific behavior isolated so future integrations remain possible.
 
 Please open an issue first for larger architectural changes or new provider/database integrations.
-
-## Project status
-
-SSA is an active engineering and learning project. The current implementation is deliberately focused on a local SQL Server workflow while keeping the boundaries clear for future provider and database extensibility.
