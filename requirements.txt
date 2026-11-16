@@ -1,23 +1,26 @@
 # Database connectivity
-pyodbc
+pyodbc==5.5.0
 
 # Environment configuration
-python-dotenv
+python-dotenv==1.2.4
 
 # Local LLM integration
-ollama
+ollama==0.6.3
 
 # Data validation
-pydantic
+pydantic==2.14.3
 
 # SQL parsing and validation
-sqlglot
+sqlglot==30.31.0
 
 # Logging and terminal output
-rich
+rich==15.0.0
 
 # Schema retrieval and vector indexing
-chromadb
+chromadb==1.5.9
 
 # Local web interface
-streamlit
+streamlit==1.67.0
+
+# Streamlit result rendering
+pandas==3.1.1
