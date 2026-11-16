@@ -10,10 +10,16 @@ import socket
 import time
 from collections.abc import Mapping
 
-import ollama
 from dotenv import load_dotenv
 
+from ssa.contracts import GenerationRequest
 from ssa.db import ConfigurationError
+from ssa.ollama_provider import (
+    OllamaConnectionError as ProviderConnectionError,
+    OllamaGenerationError as ProviderGenerationError,
+    OllamaGenerationTimeoutError as ProviderGenerationTimeoutError,
+    OllamaProvider,
+)
 from ssa.schema_retrieval import search_schema
 from ssa.sql_validator import validate_sql
 
@@ -265,19 +271,22 @@ T-SQL QUERY:
 
     generation_started = time.perf_counter()
     try:
-        client = ollama.Client(host=OLLAMA_BASE_URL, timeout=request_timeout)
-        response = client.generate(
+        provider = OllamaProvider(
+            lambda request: prompt,
             model=OLLAMA_MODEL,
-            prompt=prompt,
+            base_url=OLLAMA_BASE_URL,
+            request_timeout=request_timeout,
+        )
+        generation_result = provider.generate(
+            GenerationRequest(
+                question=question,
+                schema_context=schema_context,
+                dialect="tsql",
+                model=OLLAMA_MODEL,
+            )
         )
 
-        response_text = _response_value(response, "response")
-        if not isinstance(response_text, str):
-            raise OllamaGenerationError(
-                "Ollama returned an invalid generation response."
-            )
-
-        sql = response_text.strip()
+        sql = generation_result.query.strip()
         if not sql:
             raise OllamaGenerationError("Ollama returned an empty SQL response.")
 
@@ -288,8 +297,12 @@ T-SQL QUERY:
 
         # Repair misplaced terminal TOP N before SQL validation
         sql = repair_terminal_top(sql)
-    except (OllamaConnectionError, OllamaGenerationTimeoutError, OllamaGenerationError):
-        raise
+    except ProviderConnectionError as exc:
+        raise OllamaConnectionError(str(exc)) from exc
+    except ProviderGenerationTimeoutError as exc:
+        raise OllamaGenerationTimeoutError(str(exc)) from exc
+    except ProviderGenerationError as exc:
+        raise OllamaGenerationError(str(exc)) from exc
     except Exception as exc:
         raise _ollama_error(exc) from exc
     finally:
@@ -301,7 +314,18 @@ T-SQL QUERY:
     finally:
         _add_timing(timings, "validation_ms", validation_started)
     if return_usage:
-        return validated_sql, token_usage_from_response(response)
+        usage = generation_result.usage
+        prompt_tokens = usage.prompt_tokens if usage else None
+        completion_tokens = usage.completion_tokens if usage else None
+        total_tokens = usage.total_tokens if usage else None
+        return validated_sql, {
+            "model": (usage.model if usage and usage.model else OLLAMA_MODEL),
+            "prompt_tokens": prompt_tokens if prompt_tokens is not None else 0,
+            "completion_tokens": (
+                completion_tokens if completion_tokens is not None else 0
+            ),
+            "total_tokens": total_tokens if total_tokens is not None else 0,
+        }
     return validated_sql
 
 

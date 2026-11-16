@@ -21,7 +21,7 @@ def test_uses_configured_positive_request_timeout(monkeypatch):
             return {"response": "SELECT 1"}
 
     _stub_retrieval_and_validation(monkeypatch)
-    monkeypatch.setattr(generator.ollama, "Client", FakeClient)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FakeClient)
 
     assert generator.generate_sql("test") == "SELECT 1"
     assert captured["timeout"] == 17
@@ -41,7 +41,7 @@ def test_accepts_typed_ollama_response_and_reads_usage(monkeypatch):
             )
 
     _stub_retrieval_and_validation(monkeypatch)
-    monkeypatch.setattr(generator.ollama, "Client", FakeClient)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FakeClient)
 
     sql, usage = generator.generate_sql("test", return_usage=True)
 
@@ -65,7 +65,7 @@ def test_records_retrieval_generation_and_validation_milliseconds(monkeypatch):
             return {"response": "SELECT 1"}
 
     _stub_retrieval_and_validation(monkeypatch)
-    monkeypatch.setattr(generator.ollama, "Client", FakeClient)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FakeClient)
     monkeypatch.setattr(generator.time, "perf_counter", lambda: next(clock))
 
     timings = {}
@@ -107,7 +107,7 @@ def test_classifies_ollama_failures_without_leaking_details(
             raise failure
 
     _stub_retrieval_and_validation(monkeypatch)
-    monkeypatch.setattr(generator.ollama, "Client", FailingClient)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FailingClient)
 
     with pytest.raises(error_type) as error:
         generator.generate_sql("test")
@@ -126,7 +126,7 @@ def test_rejects_malformed_ollama_responses(monkeypatch, response):
             return response
 
     _stub_retrieval_and_validation(monkeypatch)
-    monkeypatch.setattr(generator.ollama, "Client", FakeClient)
+    monkeypatch.setattr("ssa.ollama_provider.ollama.Client", FakeClient)
 
     with pytest.raises(generator.OllamaGenerationError, match="response"):
         generator.generate_sql("test")
