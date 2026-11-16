@@ -4,9 +4,11 @@ SSA - End-to-End Assistant
 Natural language -> schema -> SQL -> validation -> execution -> results.
 """
 
+from dataclasses import replace
 import time
 
-from ssa.contracts import QueryResult, ValidatedQuery
+from ssa.contracts import PipelineDiagnostics, QueryResult, ValidatedQuery
+from ssa.pipeline import PipelineExecutionError, PipelineOrchestrator, TIMING_KEYS
 from ssa.sql_server_adapter import SQLServerDatabaseAdapter
 from ssa.sql_generator import generate_sql
 from ssa.sql_generator import (
@@ -24,33 +26,45 @@ from ssa.sql_validator import SQLValidationError
 from ssa.db import ConfigurationError, DatabaseConnectionError
 
 
-TIMING_KEYS = (
-    "retrieval_ms",
-    "generation_ms",
-    "validation_ms",
-    "execution_ms",
-    "total_ms",
-)
-
-
 sql_server_adapter = SQLServerDatabaseAdapter()
 
 
-def _new_timings() -> dict:
-    """Return the stable provider-neutral timing shape."""
-
-    return {key: None for key in TIMING_KEYS}
-
-
-def _finish_response(response: dict, timings: dict, started_at: float) -> dict:
+def _finish_response(
+    response: dict,
+    diagnostics: PipelineDiagnostics,
+) -> dict:
     """Attach diagnostics while preserving the existing response fields."""
 
-    timings["total_ms"] = (time.perf_counter() - started_at) * 1000
     response["diagnostics"] = {
-        "timings_ms": {key: timings.get(key) for key in TIMING_KEYS},
+        "timings_ms": {
+            "retrieval_ms": diagnostics.retrieval_ms,
+            "generation_ms": diagnostics.generation_ms,
+            "validation_ms": diagnostics.validation_ms,
+            "execution_ms": diagnostics.execution_ms,
+            "total_ms": diagnostics.total_ms,
+        },
         "failure_stage": response.get("error_stage"),
     }
     return response
+
+
+def _failure_stage(cause: Exception, fallback: str) -> str:
+    """Preserve the legacy public stage for known exception classes."""
+
+    if isinstance(cause, SQLValidationError):
+        return "validation"
+    if isinstance(cause, DatabaseConnectionError):
+        return "connection"
+    if isinstance(
+        cause,
+        (
+            OllamaConnectionError,
+            OllamaGenerationError,
+            OllamaGenerationTimeoutError,
+        ),
+    ):
+        return "generation"
+    return fallback
 
 
 def _legacy_result(result: QueryResult | dict) -> dict:
@@ -71,50 +85,45 @@ def _legacy_result(result: QueryResult | dict) -> dict:
 def ask(question: str) -> dict:
     """Answer a natural-language question using the database."""
 
-    started_at = time.perf_counter()
-    timings = _new_timings()
-
     print("\nQUESTION:")
     print(question)
 
     token_usage = None
     generation_succeeded = False
+    diagnostics = None
 
     try:
-        print("\nGENERATING SQL...")
-        # ``return_usage`` lets the UI show Ollama's actual token accounting.
-        # The fallback keeps compatibility with older/test doubles of generate_sql.
         try:
-            generated = generate_sql(
-                question,
-                return_usage=True,
-                timings=timings,
+            print("\nGENERATING SQL...")
+            pipeline_result = PipelineOrchestrator(
+                generate_sql,
+                sql_server_adapter,
+                max_rows=100,
+                timing_aware=True,
+            ).run(question)
+            sql = pipeline_result.sql
+            token_usage = pipeline_result.usage
+            diagnostics = pipeline_result.diagnostics
+        except PipelineExecutionError as pipeline_error:
+            sql = pipeline_error.sql
+            token_usage = pipeline_error.usage
+            generation_succeeded = pipeline_error.stage != "generation"
+            diagnostics = replace(
+                pipeline_error.diagnostics,
+                failure_stage=_failure_stage(
+                    pipeline_error.cause,
+                    pipeline_error.stage,
+                ),
             )
-        except TypeError as exc:
-            if "timings" not in str(exc):
-                raise
-            try:
-                generated = generate_sql(question, return_usage=True)
-            except TypeError as fallback_exc:
-                if "return_usage" not in str(fallback_exc):
-                    raise
-                generated = generate_sql(question)
+            raise pipeline_error.cause
 
-        if isinstance(generated, tuple):
-            sql, token_usage = generated
-        else:
-            sql, token_usage = generated, None
         generation_succeeded = True
 
         print("\nGENERATED SQL:")
         print(sql)
 
         print("\nVALIDATING SQL SYNTAX, DATABASE SCHEMA, AND EXECUTING SQL...")
-        typed_result = sql_server_adapter.execute_read(
-            ValidatedQuery(sql),
-            timings=timings,
-        )
-        result = _legacy_result(typed_result)
+        result = _legacy_result(pipeline_result.result)
 
         print("\nRESULTS:")
         for row in result["rows"]:
@@ -150,7 +159,7 @@ def ask(question: str) -> dict:
             },
             "result": result,
             "success": True,
-        }, timings, started_at)
+        }, diagnostics)
 
     except SQLValidationError as exc:
         error = "SQL validation failed. Check the query syntax and referenced schema."
@@ -176,7 +185,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "validation",
             "error": error,
-        }, timings, started_at)
+        }, diagnostics)
 
     except ConfigurationError:
         print("\nSSA CONFIGURATION ERROR")
@@ -195,15 +204,14 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "configuration",
             "error": "SSA configuration is invalid. Check the configured environment variables.",
-        }, timings, started_at)
+        }, diagnostics)
 
     except OllamaConnectionError:
         error = "Ollama is unavailable. Start Ollama and verify the local service."
         print(f"\nSQL GENERATION ERROR: {error}")
         return _finish_response(
             _generation_failure(question, error, token_usage),
-            timings,
-            started_at,
+            diagnostics,
         )
 
     except OllamaGenerationTimeoutError:
@@ -211,8 +219,7 @@ def ask(question: str) -> dict:
         print(f"\nSQL GENERATION ERROR: {error}")
         return _finish_response(
             _generation_failure(question, error, token_usage),
-            timings,
-            started_at,
+            diagnostics,
         )
 
     except OllamaGenerationError:
@@ -220,8 +227,7 @@ def ask(question: str) -> dict:
         print(f"\nSQL GENERATION ERROR: {error}")
         return _finish_response(
             _generation_failure(question, error, token_usage),
-            timings,
-            started_at,
+            diagnostics,
         )
 
     except DatabaseConnectionError as exc:
@@ -241,7 +247,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "connection",
             "error": str(exc),
-        }, timings, started_at)
+        }, diagnostics)
 
     except SQLExecutionError as exc:
         if isinstance(exc, SQLQueryTimeoutError):
@@ -277,7 +283,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "execution",
             "error": error,
-        }, timings, started_at)
+        }, diagnostics)
 
     except Exception as exc:
         error_stage = "execution" if generation_succeeded else "generation"
@@ -300,7 +306,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": error_stage,
             "error": error,
-        }, timings, started_at)
+        }, diagnostics)
 
 
 def _generation_failure(question: str, error: str, token_usage: dict | None) -> dict:

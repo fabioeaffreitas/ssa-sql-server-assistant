@@ -79,10 +79,14 @@ class PipelineExecutionError(RuntimeError):
         stage: str,
         cause: Exception,
         diagnostics: PipelineDiagnostics,
+        sql: str = "",
+        usage: dict | None = None,
     ) -> None:
         self.stage = stage
         self.cause = cause
         self.diagnostics = diagnostics
+        self.sql = sql
+        self.usage = usage
         super().__init__(str(cause))
 
 
@@ -143,9 +147,23 @@ class PipelineOrchestrator:
                 )
         except PipelineStageError as exc:
             stage = exc.stage
-            raise self._failure(stage, exc.cause, timings, started_at) from exc.cause
+            raise self._failure(
+                stage,
+                exc.cause,
+                timings,
+                started_at,
+                sql,
+                usage,
+            ) from exc.cause
         except Exception as exc:
-            raise self._failure(stage, exc, timings, started_at) from exc
+            raise self._failure(
+                stage,
+                exc,
+                timings,
+                started_at,
+                sql,
+                usage,
+            ) from exc
 
         diagnostics = self._diagnostics(timings, None, started_at)
         return PipelineRunResult(
@@ -178,6 +196,8 @@ class PipelineOrchestrator:
         cause: Exception,
         timings: dict,
         started_at: float,
+        sql: str,
+        usage: dict | None,
     ) -> PipelineExecutionError:
         diagnostics = cls._diagnostics(timings, stage, started_at)
-        return PipelineExecutionError(stage, cause, diagnostics)
+        return PipelineExecutionError(stage, cause, diagnostics, sql, usage)

@@ -87,6 +87,7 @@ def test_ask_uses_adapter_execution_without_redundant_validation(monkeypatch):
     }
     execute_read.assert_called_once_with(
         assistant.ValidatedQuery("SELECT 1"),
+        max_rows=100,
         timings=response["diagnostics"]["timings_ms"] | {},
     )
     validate_read_query.assert_not_called()
@@ -101,7 +102,7 @@ def test_ask_collects_provider_neutral_timings(monkeypatch):
         timings["validation_ms"] = 4.0
         return "SELECT 1", {"total_tokens": 3}
 
-    def fake_execute(sql, timings):
+    def fake_execute(sql, max_rows, timings):
         timings["validation_ms"] += 6.0
         timings["execution_ms"] = 18.75
         return {
