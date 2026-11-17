@@ -12,6 +12,11 @@ Supported structural invariant grammar:
 
 The grammar is deliberately narrow. Other non-empty invariant strings are
 unsupported until a later checkpoint defines and tests them.
+
+JSON ground-truth proposals may encode precise scalar values as tagged
+objects: ``{"__type__": "decimal", "value": "12.3400"}``, or equivalent
+``date`` and ``datetime`` tags. These are decoded before comparison so money
+values are not coerced through binary floating point.
 """
 
 from collections.abc import Mapping, Sequence
@@ -338,15 +343,38 @@ def _rows_match(
 def _row_signature(row: Any, columns: list[str]) -> tuple[Any, ...] | None:
     if isinstance(row, Mapping):
         normalized = {
-            _normalize_column(key): value
+            _normalize_column(key): _decode_ground_truth_value(value)
             for key, value in row.items()
         }
         if columns:
             return tuple(normalized.get(_normalize_column(column)) for column in columns)
         return tuple(sorted(normalized.items()))
     if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)):
-        return tuple(row)
+        return tuple(_decode_ground_truth_value(value) for value in row)
     return None
+
+
+def _decode_ground_truth_value(value: Any) -> Any:
+    """Decode the explicit JSON scalar representation used by ground truth."""
+
+    if not isinstance(value, Mapping) or set(value) != {"__type__", "value"}:
+        return value
+
+    value_type = value.get("__type__")
+    raw_value = value.get("value")
+    if not isinstance(raw_value, str):
+        return value
+    try:
+        if value_type == "decimal":
+            decoded = Decimal(raw_value)
+            return decoded if decoded.is_finite() else value
+        if value_type == "date":
+            return date.fromisoformat(raw_value)
+        if value_type == "datetime":
+            return datetime.fromisoformat(raw_value)
+    except (InvalidOperation, ValueError):
+        return value
+    return value
 
 
 def _contains_invalid_number(value: Any) -> bool:
