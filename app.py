@@ -132,8 +132,12 @@ if st.button("Ask SSA", type="primary", disabled=not question.strip()):
             validation = response.get("validation")
             execution = response.get("execution") or {}
             result = response.get("result") or {}
-            diagnostics = response.get("diagnostics") or {}
-            timings = diagnostics.get("timings_ms") or {}
+            raw_diagnostics = response.get("diagnostics")
+            diagnostics = (
+                raw_diagnostics if isinstance(raw_diagnostics, dict) else {}
+            )
+            raw_timings = diagnostics.get("timings_ms")
+            timings = raw_timings if isinstance(raw_timings, dict) else {}
 
             if diagnostics:
                 with st.expander("Diagnostics", expanded=False):
