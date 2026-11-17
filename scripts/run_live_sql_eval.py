@@ -4,7 +4,9 @@ import csv
 from datetime import datetime
 import json
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Callable
+import argparse
 
 from ssa.assistant import ask
 from ssa.semantic_evaluation import compare_semantics
@@ -93,7 +95,10 @@ def load_semantic_dataset(path: Path | None = None) -> tuple[dict[str, Any], ...
     if not isinstance(cases, list) or len(cases) != len(EVALUATION_CASES):
         raise ValueError("Semantic evaluation dataset must contain exactly 14 cases.")
 
-    case_ids = [case.get("case_id") for case in cases if isinstance(case, dict)]
+    if not all(isinstance(case, dict) for case in cases):
+        raise ValueError("Semantic evaluation cases must be objects.")
+
+    case_ids = [case["case_id"] for case in cases]
     if len(case_ids) != len(cases) or len(set(case_ids)) != len(case_ids):
         raise ValueError("Semantic evaluation case IDs must be unique.")
 
@@ -102,10 +107,49 @@ def load_semantic_dataset(path: Path | None = None) -> tuple[dict[str, Any], ...
         raise ValueError("Semantic evaluation questions do not match the live evaluator.")
 
     for case in cases:
-        if not isinstance(case, dict) or case.get("review_status") not in REVIEW_STATUSES:
+        if case.get("review_status") not in REVIEW_STATUSES:
             raise ValueError("Semantic evaluation case has an invalid review status.")
 
     return tuple(cases)
+
+
+def select_cases(
+    cases: tuple[dict[str, Any], ...],
+    requested_case_ids: Sequence[str] | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Select validated cases in canonical order, or return the full set."""
+
+    if requested_case_ids is None:
+        return cases
+
+    requested = list(requested_case_ids)
+    if any(not isinstance(case_id, str) or not case_id.strip() for case_id in requested):
+        raise ValueError("Each --case-id value must be non-empty.")
+    if len(set(requested)) != len(requested):
+        raise ValueError("Duplicate --case-id values are not allowed.")
+
+    by_id = {case["case_id"]: case for case in cases}
+    unknown = [case_id for case_id in requested if case_id not in by_id]
+    if unknown:
+        raise ValueError(f"Unknown semantic case ID: {unknown[0]}")
+
+    requested_set = set(requested)
+    return tuple(case for case in cases if case["case_id"] in requested_set)
+
+
+def scope_summary(
+    cases: tuple[dict[str, Any], ...],
+    requested_case_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Describe full versus targeted execution without changing CSV output."""
+
+    selected = select_cases(cases, requested_case_ids)
+    return {
+        "scope": "full" if requested_case_ids is None else "targeted",
+        "selected_count": len(selected),
+        "canonical_count": len(cases),
+        "selected_case_ids": tuple(case["case_id"] for case in selected),
+    }
 
 
 def evaluate_response(
@@ -186,19 +230,22 @@ def run_evaluation(
     dataset_path: Path | None = None,
     report_path: Path | None = None,
     verbose: bool = False,
+    requested_case_ids: Sequence[str] | None = None,
 ) -> tuple[list[dict[str, Any]], Path | None]:
-    """Run the fixed evaluation sequence after validating its dataset."""
+    """Run selected cases after validating the complete authoritative dataset."""
 
     cases = load_semantic_dataset(dataset_path)
+    selected_cases = select_cases(cases, requested_case_ids)
     results = []
     output_path = report_path
 
     if output_path is not None:
         output_path.parent.mkdir(exist_ok=True)
 
-    for index, question in enumerate(EVALUATION_CASES, start=1):
+    for index, case in enumerate(selected_cases, start=1):
+        question = case["question"]
         if verbose:
-            print(f"\n[{index}/{len(EVALUATION_CASES)}] {question}")
+            print(f"\n[{index}/{len(selected_cases)}] {question}")
             print("-" * 70)
         response = ask_callable(question)
         row = evaluate_response(question, response, cases)
@@ -218,6 +265,15 @@ def run_evaluation(
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--case-id",
+        action="append",
+        dest="case_ids",
+        help="Run one selected semantic case; repeat for multiple case IDs.",
+    )
+    args = parser.parse_args()
+
     project_root = Path(__file__).resolve().parent.parent
     reports_dir = project_root / "reports"
     reports_dir.mkdir(exist_ok=True)
@@ -225,11 +281,24 @@ def main():
 
     print("\nSSA LIVE TEXT-TO-SQL EVALUATION")
     print("=" * 70)
-    results, report_path = run_evaluation(report_path=report_path, verbose=True)
+    try:
+        cases = load_semantic_dataset()
+        scope = scope_summary(cases, args.case_ids)
+        results, report_path = run_evaluation(
+            report_path=report_path,
+            verbose=True,
+            requested_case_ids=args.case_ids,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
     metrics = summary_metrics(results)
     total = metrics["total"]
     print("\n\nEVALUATION SUMMARY")
     print("=" * 70)
+    print(f"Run scope: {scope['scope']}")
+    print(f"Selected cases: {', '.join(scope['selected_case_ids'])}")
+    print(f"Total canonical cases: {scope['canonical_count']}")
     print(f"Questions evaluated: {total}")
     print(f"Generation success: {metrics['generation_success']}/{total}")
     print(f"Validation success: {metrics['validation_success']}/{total}")

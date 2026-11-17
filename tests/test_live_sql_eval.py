@@ -1,6 +1,9 @@
 import csv
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -262,3 +265,176 @@ def test_semantic_scoring_uses_synthetic_response_without_external_calls():
     calls.append(row["semantic_status"])
 
     assert calls == ["pass"]
+
+
+def test_no_selection_runs_all_fourteen_cases(tmp_path):
+    calls = []
+
+    rows, _ = evaluator.run_evaluation(
+        ask_callable=lambda question: (calls.append(question) or response()),
+        report_path=tmp_path / "all.csv",
+    )
+
+    assert len(rows) == 14
+    assert calls == evaluator.EVALUATION_CASES
+
+
+def test_one_and_two_selected_ids_run_only_selected_cases(tmp_path):
+    one_calls = []
+    one_rows, _ = evaluator.run_evaluation(
+        ask_callable=lambda question: (one_calls.append(question) or response()),
+        report_path=tmp_path / "one.csv",
+        requested_case_ids=["AW2025-004"],
+    )
+    two_calls = []
+    two_rows, _ = evaluator.run_evaluation(
+        ask_callable=lambda question: (two_calls.append(question) or response()),
+        report_path=tmp_path / "two.csv",
+        requested_case_ids=["AW2025-004", "AW2025-012"],
+    )
+
+    assert len(one_rows) == 1
+    assert one_calls == [evaluator.EVALUATION_CASES[3]]
+    assert len(two_rows) == 2
+    assert [row["case_id"] for row in two_rows] == ["AW2025-004", "AW2025-012"]
+    assert two_calls == [evaluator.EVALUATION_CASES[3], evaluator.EVALUATION_CASES[11]]
+
+
+def test_reversed_selection_arguments_use_canonical_order():
+    cases = evaluator.load_semantic_dataset()
+
+    selected = evaluator.select_cases(cases, ["AW2025-012", "AW2025-004"])
+
+    assert [case["case_id"] for case in selected] == ["AW2025-004", "AW2025-012"]
+
+
+@pytest.mark.parametrize(
+    "requested, message",
+    [
+        (["AW2025-999"], "Unknown"),
+        (["AW2025-004", "AW2025-004"], "Duplicate"),
+        ([""], "non-empty"),
+        (["   "], "non-empty"),
+    ],
+)
+def test_invalid_selection_is_rejected_before_any_request(tmp_path, requested, message):
+    calls = []
+
+    with pytest.raises(ValueError, match=message):
+        evaluator.run_evaluation(
+            ask_callable=lambda question: calls.append(question),
+            report_path=tmp_path / "invalid.csv",
+            requested_case_ids=requested,
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "field, value, message",
+    [
+        ("schema_version", 99, "version"),
+        ("dataset_id", "wrong", "identity"),
+    ],
+)
+def test_dataset_metadata_errors_reject_before_selected_request(tmp_path, field, value, message):
+    data = json.loads(evaluator.DATASET_PATH.read_text(encoding="utf-8"))
+    data[field] = value
+    path = tmp_path / f"{field}.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    calls = []
+
+    with pytest.raises(ValueError, match=message):
+        evaluator.run_evaluation(
+            ask_callable=lambda question: calls.append(question),
+            dataset_path=path,
+            requested_case_ids=["AW2025-004"],
+        )
+    assert calls == []
+
+
+def test_malformed_unselected_case_rejects_entire_run(tmp_path):
+    data = json.loads(evaluator.DATASET_PATH.read_text(encoding="utf-8"))
+    data["cases"][-1]["question"] = "malformed unselected question"
+    path = tmp_path / "malformed-unselected.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    calls = []
+
+    with pytest.raises(ValueError, match="questions"):
+        evaluator.run_evaluation(
+            ask_callable=lambda question: calls.append(question),
+            dataset_path=path,
+            requested_case_ids=["AW2025-004"],
+        )
+    assert calls == []
+
+
+def test_selected_csv_has_one_row_per_case_and_historical_columns(tmp_path):
+    path = tmp_path / "selected.csv"
+    evaluator.run_evaluation(
+        ask_callable=lambda question: response(),
+        report_path=path,
+        requested_case_ids=["AW2025-012", "AW2025-004"],
+    )
+
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        records = list(reader)
+
+    assert len(records) == 2
+    assert [record["case_id"] for record in records] == ["AW2025-004", "AW2025-012"]
+    assert reader.fieldnames[:len(evaluator.HISTORICAL_COLUMNS)] == list(evaluator.HISTORICAL_COLUMNS)
+
+
+def test_selected_metrics_exclude_not_evaluated_from_accuracy():
+    cases = evaluator.load_semantic_dataset()
+    results = [
+        evaluator.evaluate_response("Show the 10 most expensive products by list price.", response(), cases),
+        evaluator.evaluate_response("Show customers with more than 10 sales orders.", response(), cases),
+    ]
+    metrics = evaluator.summary_metrics(results)
+
+    assert metrics["total"] == 2
+    assert metrics["semantic_fail_count"] == 2
+    assert metrics["semantic_pass_count"] == 0
+    assert metrics["semantic_not_evaluated_count"] == 0
+    assert metrics["semantic_accuracy"] == 0.0
+
+
+def test_scope_summary_distinguishes_targeted_and_full_runs():
+    cases = evaluator.load_semantic_dataset()
+
+    full = evaluator.scope_summary(cases)
+    targeted = evaluator.scope_summary(cases, ["AW2025-012"])
+
+    assert full == {
+        "scope": "full",
+        "selected_count": 14,
+        "canonical_count": 14,
+        "selected_case_ids": tuple(case["case_id"] for case in cases),
+    }
+    assert targeted["scope"] == "targeted"
+    assert targeted["selected_count"] == 1
+    assert targeted["canonical_count"] == 14
+    assert targeted["selected_case_ids"] == ("AW2025-012",)
+
+
+def test_invalid_cli_selection_exits_before_any_evaluation_request():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.run_live_sql_eval",
+            "--case-id",
+            "AW2025-999",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "Unknown semantic case ID" in completed.stderr
+    assert "[1/" not in completed.stdout

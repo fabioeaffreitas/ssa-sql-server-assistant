@@ -27,3 +27,22 @@ The verified pilot expectations come from the reviewed capture taken at `2026-11
 `AW2025-012` expects 109 customers identified by `Sales.Customer.CustomerID`, using `SalesOrderHeader.SalesOrderID` counts strictly greater than 10. Its comparison is order-insensitive and uses exact integer counts. The assistant currently limits results to 100 rows, so a truncated live response for this case is `not_evaluated`, never a semantic pass.
 
 Verified ground truth means reviewed reference expectations exist; it does not mean the model has passed a live semantic evaluation. The existing 14/14 pipeline-success result remains a reliability metric and is not semantic accuracy. Expected results must be reverified if the AdventureWorks database contents, schema, or business definitions change.
+
+## Running the evaluator
+
+Run the complete fixed 14-case evaluation with:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.run_live_sql_eval
+```
+
+For a lower-cost targeted run, select one or more stable case IDs:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.run_live_sql_eval --case-id AW2025-004
+.\.venv\Scripts\python.exe -m scripts.run_live_sql_eval --case-id AW2025-004 --case-id AW2025-012
+```
+
+The runner validates the complete 14-case dataset before making any assistant request. Selected cases are executed in canonical dataset order, regardless of command-line order. Invalid, duplicate, empty, or unknown IDs fail before evaluation begins.
+
+Targeted summaries report only the selected cases and identify the run as targeted; they must not be interpreted as full-suite accuracy. `AW2025-004` is the first eligible live semantic pilot. `AW2025-012` has 109 reviewed expected rows, while the active assistant result limit is 100, so truncated responses remain `not_evaluated` until an evaluation-only row-limit mechanism is available.
