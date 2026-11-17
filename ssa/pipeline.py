@@ -5,7 +5,9 @@ active ``assistant.ask`` entry point or any provider/database implementation.
 """
 
 from dataclasses import dataclass
+import logging
 import time
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 from ssa.contracts import (
@@ -14,6 +16,7 @@ from ssa.contracts import (
     RelationalDatabaseAdapter,
     ValidatedQuery,
 )
+from ssa.sql_ordering_safeguard import OrderingRisk, inspect_top_ordering
 
 
 TIMING_KEYS = (
@@ -60,6 +63,7 @@ class PipelineRunResult:
     usage: dict | None
     result: QueryResult
     diagnostics: PipelineDiagnostics
+    ordering_advisory: OrderingRisk | None = None
 
 
 class PipelineStageError(RuntimeError):
@@ -81,12 +85,14 @@ class PipelineExecutionError(RuntimeError):
         diagnostics: PipelineDiagnostics,
         sql: str = "",
         usage: dict | None = None,
+        ordering_advisory: OrderingRisk | None = None,
     ) -> None:
         self.stage = stage
         self.cause = cause
         self.diagnostics = diagnostics
         self.sql = sql
         self.usage = usage
+        self.ordering_advisory = ordering_advisory
         super().__init__(str(cause))
 
 
@@ -106,11 +112,17 @@ class PipelineOrchestrator:
         *,
         max_rows: int = 100,
         timing_aware: bool = False,
+        primary_keys: Mapping[str, Sequence[str]] | None = None,
+        ordering_detector: Callable[
+            [str, Mapping[str, Sequence[str]]], OrderingRisk
+        ] = inspect_top_ordering,
     ) -> None:
         self.sql_generator = sql_generator
         self.database = database
         self.max_rows = max_rows
         self.timing_aware = timing_aware
+        self.primary_keys = primary_keys
+        self.ordering_detector = ordering_detector
 
     def run(self, question: str) -> PipelineRunResult:
         """Run generation and one bounded database read."""
@@ -119,6 +131,7 @@ class PipelineOrchestrator:
         timings = {key: None for key in TIMING_KEYS}
         sql = ""
         usage = None
+        ordering_advisory = None
         stage = "generation"
 
         try:
@@ -131,6 +144,19 @@ class PipelineOrchestrator:
                 sql, usage = generated
             else:
                 sql = generated
+
+            if self.primary_keys is not None:
+                try:
+                    ordering_advisory = self.ordering_detector(
+                        sql,
+                        self.primary_keys,
+                    )
+                except Exception as exc:
+                    # Advisory analysis must never change request behavior.
+                    logging.getLogger(__name__).warning(
+                        "Ordering advisory failed: error_type=%s",
+                        type(exc).__name__,
+                    )
 
             stage = "execution"
             validated_query = ValidatedQuery(sql)
@@ -154,6 +180,7 @@ class PipelineOrchestrator:
                 started_at,
                 sql,
                 usage,
+                ordering_advisory,
             ) from exc.cause
         except Exception as exc:
             raise self._failure(
@@ -163,6 +190,7 @@ class PipelineOrchestrator:
                 started_at,
                 sql,
                 usage,
+                ordering_advisory,
             ) from exc
 
         diagnostics = self._diagnostics(timings, None, started_at)
@@ -171,6 +199,7 @@ class PipelineOrchestrator:
             usage=usage,
             result=result,
             diagnostics=diagnostics,
+            ordering_advisory=ordering_advisory,
         )
 
     @staticmethod
@@ -198,6 +227,14 @@ class PipelineOrchestrator:
         started_at: float,
         sql: str,
         usage: dict | None,
+        ordering_advisory: OrderingRisk | None = None,
     ) -> PipelineExecutionError:
         diagnostics = cls._diagnostics(timings, stage, started_at)
-        return PipelineExecutionError(stage, cause, diagnostics, sql, usage)
+        return PipelineExecutionError(
+            stage,
+            cause,
+            diagnostics,
+            sql,
+            usage,
+            ordering_advisory,
+        )

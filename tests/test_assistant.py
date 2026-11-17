@@ -8,6 +8,13 @@ from ssa.contracts import QueryResult
 from tests.fakes import FakeSQLGenerator, TimingAwareFakeRelationalDatabaseAdapter
 
 
+@pytest.fixture(autouse=True)
+def disable_ordering_metadata_for_legacy_assistant_tests(monkeypatch):
+    """Keep existing assistant contract tests independent of local metadata."""
+
+    monkeypatch.setattr(assistant, "_load_ordering_keys", lambda: None)
+
+
 def assert_generation_call(mock, question):
     mock.assert_called_once()
     assert mock.call_args.args == (question,)
@@ -540,3 +547,72 @@ def test_ask_fake_execution_failures_preserve_public_classification(
     assert response["sql"] == "SELECT 1"
     assert response["generation"]["usage"] == generator.usage
     assert message in response["error"]
+
+
+def test_ask_serializes_ordering_advisory_without_changing_response_shape(monkeypatch):
+    generator = FakeSQLGenerator(
+        sql=(
+            "SELECT TOP 10 ItemKey, ItemName, Price "
+            "FROM Catalog.Item ORDER BY Price DESC"
+        ),
+        usage={"model": "fake-model", "total_tokens": 6},
+    )
+    adapter = TimingAwareFakeRelationalDatabaseAdapter()
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+    monkeypatch.setattr(
+        assistant,
+        "_load_ordering_keys",
+        lambda: {"Catalog.Item": ("ItemKey",)},
+    )
+
+    response = assistant.ask("top items")
+
+    assert response["success"] is True
+    assert response["sql"] == generator.sql
+    assert set(response) == {
+        "success",
+        "question",
+        "sql",
+        "generation",
+        "validation",
+        "execution",
+        "result",
+        "diagnostics",
+    }
+    assert response["diagnostics"]["ordering"] == {
+        "status": "risk",
+        "reason": "primary_key_missing_from_root_order",
+        "table": "Catalog.Item",
+        "primary_key_columns": ["ItemKey"],
+        "missing_key_columns": ["ItemKey"],
+    }
+    assert len(adapter.execution_calls) == 1
+
+
+def test_ask_preserves_ordering_advisory_on_execution_failure(monkeypatch):
+    generator = FakeSQLGenerator(
+        sql=(
+            "SELECT TOP 10 ItemKey, ItemName, Price "
+            "FROM Catalog.Item ORDER BY Price DESC"
+        ),
+        usage={"model": "fake-model", "total_tokens": 6},
+    )
+    adapter = TimingAwareFakeRelationalDatabaseAdapter(
+        execution_error=assistant.DatabaseConnectionError("unavailable")
+    )
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+    monkeypatch.setattr(
+        assistant,
+        "_load_ordering_keys",
+        lambda: {"Catalog.Item": ("ItemKey",)},
+    )
+
+    response = assistant.ask("top items")
+
+    assert response["success"] is False
+    assert response["sql"] == generator.sql
+    assert response["generation"]["usage"] == generator.usage
+    assert response["diagnostics"]["ordering"]["status"] == "risk"
+    assert len(adapter.execution_calls) == 1

@@ -1,6 +1,7 @@
 import pytest
 
 from ssa.contracts import QueryResult, ValidatedQuery
+from ssa.sql_ordering_safeguard import OrderingRisk
 from ssa.pipeline import (
     PipelineExecutionError,
     PipelineOrchestrator,
@@ -245,3 +246,99 @@ def test_reusable_fake_instances_have_independent_logs_and_state():
 
     assert first.calls != second.calls
     assert second.calls == []
+
+
+def test_ordering_advisory_runs_after_generation_before_execution():
+    calls = []
+
+    def generator(question, *, return_usage, timings):
+        calls.append("generate")
+        return "SELECT TOP 10 ItemKey FROM Catalog.Item ORDER BY Price DESC"
+
+    def detector(sql, primary_keys):
+        calls.append(("detect", sql, primary_keys))
+        return OrderingRisk(
+            "risk",
+            "primary_key_missing_from_root_order",
+            "Catalog.Item",
+            ("ItemKey",),
+            ("ItemKey",),
+        )
+
+    adapter = BasicAdapter(calls)
+    result = PipelineOrchestrator(
+        generator,
+        adapter,
+        primary_keys={"Catalog.Item": ("ItemKey",)},
+        ordering_detector=detector,
+    ).run("question")
+
+    assert calls[0] == "generate"
+    assert calls[1][0] == "detect"
+    assert calls[2][0] == ValidatedQuery(
+        "SELECT TOP 10 ItemKey FROM Catalog.Item ORDER BY Price DESC"
+    )
+    assert result.ordering_advisory.status == "risk"
+
+
+def test_ordering_advisory_is_skipped_without_metadata():
+    called = []
+
+    def detector(sql, primary_keys):
+        called.append(True)
+        return None
+
+    result = PipelineOrchestrator(
+        lambda question, *, return_usage, timings: "SELECT 1",
+        BasicAdapter([]),
+        ordering_detector=detector,
+    ).run("question")
+
+    assert result.ordering_advisory is None
+    assert called == []
+
+
+def test_ordering_advisory_failure_does_not_fail_request():
+    def detector(sql, primary_keys):
+        raise RuntimeError("advisory-only failure")
+
+    result = PipelineOrchestrator(
+        lambda question, *, return_usage, timings: "SELECT 1",
+        BasicAdapter([]),
+        primary_keys={"Catalog.Item": ("ItemKey",)},
+        ordering_detector=detector,
+    ).run("question")
+
+    assert result.sql == "SELECT 1"
+    assert result.result == _result()
+    assert result.ordering_advisory is None
+
+
+def test_ordering_advisory_survives_execution_failure():
+    advisory = OrderingRisk(
+        "risk",
+        "primary_key_missing_from_root_order",
+        "Catalog.Item",
+        ("ItemKey",),
+        ("ItemKey",),
+    )
+
+    def detector(sql, primary_keys):
+        return advisory
+
+    error = RuntimeError("execution failed")
+    with pytest.raises(PipelineExecutionError) as raised:
+        PipelineOrchestrator(
+            lambda question, *, return_usage, timings: (
+                "SELECT TOP 10 ItemKey FROM Catalog.Item ORDER BY Price DESC",
+                {"model": "fake"},
+            ),
+            TimingAdapter([], error=error),
+            timing_aware=True,
+            primary_keys={"Catalog.Item": ("ItemKey",)},
+            ordering_detector=detector,
+        ).run("question")
+
+    assert raised.value.ordering_advisory is advisory
+    assert raised.value.sql.endswith("ORDER BY Price DESC")
+    assert raised.value.usage == {"model": "fake"}

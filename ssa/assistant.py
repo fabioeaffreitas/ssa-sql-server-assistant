@@ -6,6 +6,8 @@ Natural language -> schema -> SQL -> validation -> execution -> results.
 
 from dataclasses import replace
 import logging
+import os
+from pathlib import Path
 import time
 
 from ssa.contracts import PipelineDiagnostics, QueryResult, ValidatedQuery
@@ -25,19 +27,23 @@ from ssa.sql_executor import (
 )
 from ssa.sql_validator import SQLValidationError
 from ssa.db import ConfigurationError, DatabaseConnectionError
+from ssa.schema_key_metadata import load_primary_keys
+from ssa.sql_ordering_safeguard import OrderingRisk
 
 
 logger = logging.getLogger(__name__)
 sql_server_adapter = SQLServerDatabaseAdapter()
+SCHEMA_METADATA_PATH = Path(__file__).resolve().parent.parent / "data" / "schema_metadata.json"
 
 
 def _finish_response(
     response: dict,
     diagnostics: PipelineDiagnostics,
+    ordering_advisory: OrderingRisk | None = None,
 ) -> dict:
     """Attach diagnostics while preserving the existing response fields."""
 
-    response["diagnostics"] = {
+    serialized = {
         "timings_ms": {
             "retrieval_ms": diagnostics.retrieval_ms,
             "generation_ms": diagnostics.generation_ms,
@@ -47,7 +53,30 @@ def _finish_response(
         },
         "failure_stage": response.get("error_stage"),
     }
+    if ordering_advisory is not None:
+        serialized["ordering"] = {
+            "status": ordering_advisory.status,
+            "reason": ordering_advisory.reason,
+            "table": ordering_advisory.table,
+            "primary_key_columns": list(ordering_advisory.primary_key_columns),
+            "missing_key_columns": list(ordering_advisory.missing_key_columns),
+        }
+    response["diagnostics"] = serialized
     return response
+
+
+def _load_ordering_keys() -> dict[str, tuple[str, ...]] | None:
+    """Load optional advisory metadata without affecting request execution."""
+
+    expected_database = os.getenv("SQL_DATABASE")
+    metadata = load_primary_keys(SCHEMA_METADATA_PATH, expected_database)
+    if not metadata.available or not metadata.primary_keys:
+        logger.info(
+            "Ordering metadata unavailable: reason=%s",
+            metadata.reason if metadata.primary_keys else "no_primary_keys",
+        )
+        return None
+    return dict(metadata.primary_keys)
 
 
 def _failure_stage(cause: Exception, fallback: str) -> str:
@@ -92,6 +121,7 @@ def ask(question: str) -> dict:
     token_usage = None
     generation_succeeded = False
     diagnostics = None
+    ordering_advisory = None
 
     try:
         try:
@@ -101,13 +131,16 @@ def ask(question: str) -> dict:
                 sql_server_adapter,
                 max_rows=100,
                 timing_aware=True,
+                primary_keys=_load_ordering_keys(),
             ).run(question)
             sql = pipeline_result.sql
             token_usage = pipeline_result.usage
             diagnostics = pipeline_result.diagnostics
+            ordering_advisory = pipeline_result.ordering_advisory
         except PipelineExecutionError as pipeline_error:
             sql = pipeline_error.sql
             token_usage = pipeline_error.usage
+            ordering_advisory = pipeline_error.ordering_advisory
             generation_succeeded = pipeline_error.stage != "generation"
             diagnostics = replace(
                 pipeline_error.diagnostics,
@@ -146,7 +179,7 @@ def ask(question: str) -> dict:
             },
             "result": result,
             "success": True,
-        }, diagnostics)
+        }, diagnostics, ordering_advisory)
 
     except SQLValidationError as exc:
         error = "SQL validation failed. Check the query syntax and referenced schema."
@@ -172,7 +205,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "validation",
             "error": error,
-        }, diagnostics)
+        }, diagnostics, ordering_advisory)
 
     except ConfigurationError:
         logger.error("SSA configuration validation failed")
@@ -191,7 +224,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "configuration",
             "error": "SSA configuration is invalid. Check the configured environment variables.",
-        }, diagnostics)
+        }, diagnostics, ordering_advisory)
 
     except OllamaConnectionError:
         error = "Ollama is unavailable. Start Ollama and verify the local service."
@@ -199,6 +232,7 @@ def ask(question: str) -> dict:
         return _finish_response(
             _generation_failure(question, error, token_usage),
             diagnostics,
+            ordering_advisory,
         )
 
     except OllamaGenerationTimeoutError:
@@ -207,6 +241,7 @@ def ask(question: str) -> dict:
         return _finish_response(
             _generation_failure(question, error, token_usage),
             diagnostics,
+            ordering_advisory,
         )
 
     except OllamaGenerationError:
@@ -215,6 +250,7 @@ def ask(question: str) -> dict:
         return _finish_response(
             _generation_failure(question, error, token_usage),
             diagnostics,
+            ordering_advisory,
         )
 
     except DatabaseConnectionError as exc:
@@ -234,7 +270,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "connection",
             "error": str(exc),
-        }, diagnostics)
+        }, diagnostics, ordering_advisory)
 
     except SQLExecutionError as exc:
         if isinstance(exc, SQLQueryTimeoutError):
@@ -270,7 +306,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": "execution",
             "error": error,
-        }, diagnostics)
+        }, diagnostics, ordering_advisory)
 
     except Exception as exc:
         error_stage = "execution" if generation_succeeded else "generation"
@@ -297,7 +333,7 @@ def ask(question: str) -> dict:
             "success": False,
             "error_stage": error_stage,
             "error": error,
-        }, diagnostics)
+        }, diagnostics, ordering_advisory)
 
 
 def _generation_failure(question: str, error: str, token_usage: dict | None) -> dict:
