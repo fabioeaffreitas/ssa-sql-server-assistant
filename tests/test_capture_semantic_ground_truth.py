@@ -1,6 +1,10 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -255,3 +259,27 @@ def test_script_has_no_assistant_or_provider_entry_point():
     assert not hasattr(capture, "ask")
     assert not hasattr(capture, "OllamaProvider")
     assert not hasattr(capture, "ChromaSchemaRetriever")
+
+
+def test_direct_script_import_bootstrap_resolves_local_ssa_without_capture(tmp_path):
+    script = Path(capture.__file__).resolve()
+    code = (
+        "import runpy, sys; "
+        "namespace = runpy.run_path(sys.argv[1], run_name='direct_import_test'); "
+        "assert namespace['EXPECTED_DATABASE'] == 'AdventureWorks2025'; "
+        "assert 'ssa.config_validation' in sys.modules"
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(script)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Ground-truth capture written" not in completed.stdout

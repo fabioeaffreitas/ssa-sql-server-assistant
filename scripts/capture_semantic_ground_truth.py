@@ -10,7 +10,14 @@ from decimal import Decimal
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any, Callable
+
+# When run by file path, Python puts ``scripts`` on sys.path instead of the
+# repository root. Keep module execution unchanged while making the documented
+# direct command resolve the local package without installation or PYTHONPATH.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ssa.config_validation import SQLConfiguration, validate_sql_configuration
 from ssa.db import get_connection
