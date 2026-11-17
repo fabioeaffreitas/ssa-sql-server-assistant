@@ -8,6 +8,9 @@ from ssa.contracts import QueryResult
 from tests.fakes import FakeSQLGenerator, TimingAwareFakeRelationalDatabaseAdapter
 
 
+_REAL_LOAD_ORDERING_KEYS = assistant._load_ordering_keys
+
+
 @pytest.fixture(autouse=True)
 def disable_ordering_metadata_for_legacy_assistant_tests(monkeypatch):
     """Keep existing assistant contract tests independent of local metadata."""
@@ -616,3 +619,139 @@ def test_ask_preserves_ordering_advisory_on_execution_failure(monkeypatch):
     assert response["generation"]["usage"] == generator.usage
     assert response["diagnostics"]["ordering"]["status"] == "risk"
     assert len(adapter.execution_calls) == 1
+
+
+def test_ask_serializes_sufficient_ordering_advisory(monkeypatch):
+    sql = (
+        "SELECT TOP 10 ItemKey, ItemName, Price "
+        "FROM Catalog.Item ORDER BY Price DESC, ItemKey ASC"
+    )
+    generator = FakeSQLGenerator(sql=sql, usage={"model": "fake", "total_tokens": 4})
+    adapter = TimingAwareFakeRelationalDatabaseAdapter()
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+    monkeypatch.setattr(
+        assistant,
+        "_load_ordering_keys",
+        lambda: {"Catalog.Item": ("ItemKey",)},
+    )
+
+    response = assistant.ask("top items with stable ordering")
+
+    assert response["success"] is True
+    assert response["sql"] == sql
+    assert response["diagnostics"]["ordering"] == {
+        "status": "sufficient",
+        "reason": "primary_key_in_root_order",
+        "table": "Catalog.Item",
+        "primary_key_columns": ["ItemKey"],
+        "missing_key_columns": [],
+    }
+    assert len(generator.calls) == 1
+    assert len(adapter.execution_calls) == 1
+    assert set(response) == {
+        "question", "sql", "generation", "validation", "execution",
+        "result", "success", "diagnostics",
+    }
+
+
+def test_ask_serializes_unsupported_ordering_advisory_nonblocking(monkeypatch):
+    sql = (
+        "SELECT TOP 10 i.ItemKey FROM Catalog.Item i "
+        "JOIN Catalog.Other o ON o.ItemKey = i.ItemKey "
+        "ORDER BY i.Price DESC"
+    )
+    generator = FakeSQLGenerator(sql=sql)
+    adapter = TimingAwareFakeRelationalDatabaseAdapter()
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+    monkeypatch.setattr(
+        assistant,
+        "_load_ordering_keys",
+        lambda: {"Catalog.Item": ("ItemKey",)},
+    )
+
+    response = assistant.ask("joined top items")
+
+    assert response["success"] is True
+    assert response["sql"] == sql
+    assert response["diagnostics"]["ordering"] == {
+        "status": "unsupported",
+        "reason": "unsupported_join",
+        "table": None,
+        "primary_key_columns": [],
+        "missing_key_columns": [],
+    }
+    assert response["validation"]["success"] is True
+    assert response["execution"]["success"] is True
+    assert len(generator.calls) == 1
+    assert len(adapter.execution_calls) == 1
+
+
+def test_ask_preserves_advisory_through_validation_failure(monkeypatch):
+    sql = "SELECT TOP 10 ItemKey FROM Catalog.Item ORDER BY Price DESC"
+    generator = FakeSQLGenerator(sql=sql, usage={"model": "fake", "total_tokens": 5})
+    adapter = TimingAwareFakeRelationalDatabaseAdapter(
+        execution_error=assistant.SQLValidationError("invalid schema")
+    )
+    monkeypatch.setattr(assistant, "generate_sql", generator)
+    monkeypatch.setattr(assistant, "sql_server_adapter", adapter)
+    monkeypatch.setattr(
+        assistant,
+        "_load_ordering_keys",
+        lambda: {"Catalog.Item": ("ItemKey",)},
+    )
+
+    response = assistant.ask("validation failure")
+
+    assert response["success"] is False
+    assert response["error_stage"] == "validation"
+    assert response["diagnostics"]["failure_stage"] == "validation"
+    assert response["diagnostics"]["ordering"]["status"] == "risk"
+    assert response["validation"]["success"] is False
+    assert response["sql"] is None
+    assert response["result"] is None
+    assert response["generation"]["usage"] == generator.usage
+    assert len(generator.calls) == 1
+    assert len(adapter.execution_calls) == 1
+
+
+def test_assistant_metadata_loader_uses_isolated_fixture(tmp_path, monkeypatch):
+    metadata_path = tmp_path / "schema_metadata.json"
+    metadata_path.write_text(
+        '{"database":"SyntheticDB","tables":'
+        '{"Catalog.Item":{"primary_keys":["ItemKey"]}},"views":{}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(assistant, "SCHEMA_METADATA_PATH", metadata_path)
+    monkeypatch.setattr(assistant, "_load_ordering_keys", _REAL_LOAD_ORDERING_KEYS)
+    monkeypatch.setenv("SQL_DATABASE", "syntheticdb")
+
+    assert assistant._load_ordering_keys() == {"Catalog.Item": ("ItemKey",)}
+
+
+@pytest.mark.parametrize(
+    ("database", "contents", "expected"),
+    [
+        ("OtherDB", '{"database":"SyntheticDB","tables":{},"views":{}}', None),
+        ("SyntheticDB", "{not-json", None),
+        (None, '{"database":"SyntheticDB","tables":{},"views":{}}', None),
+    ],
+)
+def test_assistant_metadata_loader_disables_advisory_safely(
+    tmp_path,
+    monkeypatch,
+    database,
+    contents,
+    expected,
+):
+    metadata_path = tmp_path / "schema_metadata.json"
+    metadata_path.write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(assistant, "SCHEMA_METADATA_PATH", metadata_path)
+    monkeypatch.setattr(assistant, "_load_ordering_keys", _REAL_LOAD_ORDERING_KEYS)
+    if database is None:
+        monkeypatch.delenv("SQL_DATABASE", raising=False)
+    else:
+        monkeypatch.setenv("SQL_DATABASE", database)
+
+    assert assistant._load_ordering_keys() is expected
