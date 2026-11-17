@@ -145,13 +145,13 @@ def test_dataset_identity_version_duplicates_and_question_mismatch_are_rejected(
         evaluator.load_semantic_dataset(mismatch_path)
 
 
-def test_all_current_review_required_cases_are_not_evaluated():
+def test_verified_cases_are_evaluated_and_remaining_cases_are_not_evaluated():
     cases = evaluator.load_semantic_dataset()
     rows = [evaluator.evaluate_response(case["question"], response(), cases) for case in cases]
 
     assert len(rows) == 14
-    assert {row["semantic_status"] for row in rows} == {"not_evaluated"}
-    assert all(row["semantic_pass"] is None for row in rows)
+    assert sum(row["semantic_status"] == "fail" for row in rows) == 2
+    assert sum(row["semantic_status"] == "not_evaluated" for row in rows) == 12
     assert all(row["pipeline_success"] is True for row in rows)
 
 

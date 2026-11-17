@@ -111,7 +111,15 @@ def test_no_secrets_connection_strings_or_generated_sql_are_present():
     assert not any(pattern in raw for pattern in forbidden_patterns)
 
 
-def test_dataset_contains_no_non_reviewed_cases_yet():
-    statuses = {case["review_status"] for case in load_dataset()["cases"]}
+def test_dataset_contains_only_the_two_approved_verified_cases():
+    cases = load_dataset()["cases"]
 
-    assert statuses == {"review_required"}
+    assert [case["case_id"] for case in cases if case["review_status"] == "verified"] == [
+        "AW2025-004",
+        "AW2025-012",
+    ]
+    assert all(
+        case["review_status"] == "review_required"
+        for case in cases
+        if case["case_id"] not in {"AW2025-004", "AW2025-012"}
+    )

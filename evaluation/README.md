@@ -10,7 +10,7 @@ Review statuses are:
 - `verified`: reviewed expected structure and/or results are sufficient for meaningful deterministic scoring.
 - `excluded`: intentionally omitted from semantic scoring with a documented reason.
 
-All current cases are `review_required`. No case is currently verified.
+The dataset now contains two reviewed cases: `AW2025-004` and `AW2025-012`. The remaining twelve cases are still `review_required`.
 
 `null` means the expected value is unknown and must not be interpreted as an expected empty result. An empty array is reserved for a reviewed criterion that is intentionally empty, such as no required invariants; it is not a substitute for unknown expected columns or rows.
 
@@ -22,4 +22,8 @@ The live evaluation CSV appends `case_id`, `review_status`, `pipeline_success`, 
 
 `review_required` and `excluded` cases produce `not_evaluated`; they are not counted as semantic failures. Semantic accuracy uses only evaluated `pass` and `fail` cases as its denominator. If no verified cases are eligible, semantic accuracy is reported as `N/A`.
 
-The existing 14/14 pipeline-success result remains a reliability metric and is not semantic accuracy. The current dataset contains no verified ground truth, so semantic scoring currently produces fourteen `not_evaluated` results. The semantic fields are integrated into the runner, but no live evaluation has been run for this checkpoint.
+The verified pilot expectations come from the reviewed capture taken at `2026-11-17T10:39:19.497643+00:00` against `AdventureWorks2025` on SQL Server `17.0.1000.7`. `AW2025-004` expects ten products ordered by descending `ListPrice` with ascending `ProductID` tie-breaking, including zero-priced and discontinued products. Its money values use explicit tagged Decimal values for exact comparison.
+
+`AW2025-012` expects 109 customers identified by `Sales.Customer.CustomerID`, using `SalesOrderHeader.SalesOrderID` counts strictly greater than 10. Its comparison is order-insensitive and uses exact integer counts. The assistant currently limits results to 100 rows, so a truncated live response for this case is `not_evaluated`, never a semantic pass.
+
+Verified ground truth means reviewed reference expectations exist; it does not mean the model has passed a live semantic evaluation. The existing 14/14 pipeline-success result remains a reliability metric and is not semantic accuracy. Expected results must be reverified if the AdventureWorks database contents, schema, or business definitions change.
