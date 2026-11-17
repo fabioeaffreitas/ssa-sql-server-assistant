@@ -182,6 +182,14 @@ Rules:
 - Never generate INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, or TRUNCATE.
 - Use SQL Server T-SQL syntax.
 - Use TOP instead of LIMIT.
+- For TOP-N or other bounded ordered queries, preserve the user's requested primary ordering expression and direction.
+- When ordered values may tie, use a stable secondary ordering expression only when the supplied schema explicitly identifies a suitable unique key.
+- Do not infer that a column is a primary key or unique merely from its name; never invent a tie-breaker.
+- If no suitable unique key is established by the schema, do not fabricate a secondary ordering expression.
+- Follow explicit user-specified tie handling over this generic guidance.
+- Do not add an unnecessary tie-breaker when the existing ordering is guaranteed unique.
+- For aggregate rankings, any secondary ordering must be valid at the grouping level and must not change grouping, aggregation, filtering, joins, or business meaning.
+- Preserve the requested output columns and result shape; do not add joins or columns solely to obtain stable ordering.
 - Return only the SQL query.
 - Do not include Markdown code fences or explanations.
 - Always use parentheses for SQL aggregate functions: SUM(column), COUNT(*), AVG(column), MIN(column), and MAX(column). Never write an aggregate function without parentheses.
@@ -209,6 +217,45 @@ T-SQL QUERY:
 """
     assert actual == expected
     assert captured["timeout"] == generator.DEFAULT_OLLAMA_REQUEST_TIMEOUT
+
+
+def test_prompt_contains_generic_safe_deterministic_ordering_guidance(monkeypatch):
+    captured = {}
+    provider = FakeLLMProvider(GenerationResult("SELECT 1"))
+
+    def provider_factory(prompt_builder, timeout):
+        captured["prompt_builder"] = prompt_builder
+        return provider
+
+    monkeypatch.setattr(generator, "validate_sql", lambda sql: sql)
+    retriever = FakeSchemaRetriever([
+        SchemaDocument("table:Generic", "GENERIC SCHEMA"),
+    ])
+
+    _injected_generation(
+        retriever,
+        provider,
+        provider_factory=provider_factory,
+    )
+    prompt = captured["prompt_builder"](provider.calls[0])
+
+    assert "preserve the user's requested primary ordering expression and direction" in prompt
+    assert "suitable unique key" in prompt
+    assert "Do not infer that a column is a primary key or unique merely from its name" in prompt
+    assert "never invent a tie-breaker" in prompt
+    assert "Follow explicit user-specified tie handling" in prompt
+    assert "existing ordering is guaranteed unique" in prompt
+    assert "valid at the grouping level" in prompt
+    assert "must not change grouping, aggregation, filtering, joins, or business meaning" in prompt
+    assert "Preserve the requested output columns and result shape" in prompt
+    assert "do not add joins or columns solely to obtain stable ordering" in prompt
+    assert "AW2025-004" not in prompt
+    assert "ProductID ASC" not in prompt
+    assert "GENERIC SCHEMA" in prompt
+    assert "USER QUESTION:\n" in prompt
+    assert "test question" in prompt
+    assert "Use TOP instead of LIMIT." in prompt
+    assert "Use SQL Server T-SQL syntax." in prompt
 
 
 def test_injected_generation_removes_fences_repairs_top_and_validates(monkeypatch):

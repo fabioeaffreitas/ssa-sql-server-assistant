@@ -289,6 +289,14 @@ Rules:
 - Never generate INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, or TRUNCATE.
 - Use SQL Server T-SQL syntax.
 - Use TOP instead of LIMIT.
+- For TOP-N or other bounded ordered queries, preserve the user's requested primary ordering expression and direction.
+- When ordered values may tie, use a stable secondary ordering expression only when the supplied schema explicitly identifies a suitable unique key.
+- Do not infer that a column is a primary key or unique merely from its name; never invent a tie-breaker.
+- If no suitable unique key is established by the schema, do not fabricate a secondary ordering expression.
+- Follow explicit user-specified tie handling over this generic guidance.
+- Do not add an unnecessary tie-breaker when the existing ordering is guaranteed unique.
+- For aggregate rankings, any secondary ordering must be valid at the grouping level and must not change grouping, aggregation, filtering, joins, or business meaning.
+- Preserve the requested output columns and result shape; do not add joins or columns solely to obtain stable ordering.
 - Return only the SQL query.
 - Do not include Markdown code fences or explanations.
 - Always use parentheses for SQL aggregate functions: SUM(column), COUNT(*), AVG(column), MIN(column), and MAX(column). Never write an aggregate function without parentheses.
