@@ -5,6 +5,7 @@ import os
 
 from ssa.assistant import ask
 from ssa.app_readiness import collect_readiness
+from ssa.app_ordering_advisory import ordering_advisory_message
 from ssa.logging_config import configure_logging
 
 
@@ -181,6 +182,12 @@ if st.button("Ask SSA", type="primary", disabled=not question.strip()):
             rows = []
             if execution.get("success"):
                 st.success("Query executed successfully")
+
+                ordering_message = ordering_advisory_message(
+                    response.get("diagnostics")
+                )
+                if ordering_message is not None:
+                    st.info(ordering_message)
 
                 columns = result.get("columns", [])
                 rows = result.get("rows", [])
