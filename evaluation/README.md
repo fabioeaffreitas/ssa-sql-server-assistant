@@ -46,3 +46,16 @@ For a lower-cost targeted run, select one or more stable case IDs:
 The runner validates the complete 14-case dataset before making any assistant request. Selected cases are executed in canonical dataset order, regardless of command-line order. Invalid, duplicate, empty, or unknown IDs fail before evaluation begins.
 
 Targeted summaries report only the selected cases and identify the run as targeted; they must not be interpreted as full-suite accuracy. `AW2025-004` is the first eligible live semantic pilot. `AW2025-012` has 109 reviewed expected rows, while the active assistant result limit is 100, so truncated responses remain `not_evaluated` until an evaluation-only row-limit mechanism is available.
+
+## SQL structural invariants
+
+The comparator supports these restricted structural forms in addition to table and aggregate checks:
+
+- `order_by:ListPrice DESC,ProductID ASC`
+- `top:10`
+
+`order_by` checks the outermost query only, requires the exact expression count and priority, accepts direct columns with normalized case, brackets, and safe qualifiers, and treats omitted direction as ascending. Positional references, output aliases, functions, arbitrary expressions, and unsupported invariant syntax are not treated as equivalent; they produce `not_evaluated` where equivalence cannot be established.
+
+`top` requires a positive integer literal on the outermost query. `TOP 10` and `TOP (10)` are supported. `WITH TIES`, `PERCENT`, missing TOP, wrong counts, and nested-only TOP expressions do not satisfy `top:10`. SQLGlot normalizes some `LIMIT` and `TOP` forms to the same AST; the existing SQL Server validation boundary remains responsible for dialect enforcement.
+
+Result equality alone does not guarantee the generated SQL has the approved ordering or row-limit semantics. The historical AW2025-004 CP31.6f result passed under its former table-only invariant; the same generated SQL fails under the strengthened `order_by` requirement because it omits the `ProductID ASC` tie-breaker. No historical report was rewritten and no new live result is claimed.

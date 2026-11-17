@@ -335,3 +335,172 @@ def test_legacy_dictionary_result_is_supported():
     )
 
     assert outcome.status == "pass"
+
+
+def structural_case(*invariants):
+    return case(
+        expected_columns=None,
+        expected_rows=None,
+        expected_row_count=None,
+        required_sql_invariants=list(invariants),
+    )
+
+
+ORDER_INVARIANT = "order_by:ListPrice DESC,ProductID ASC"
+TOP_INVARIANT = "top:10"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p ORDER BY p.ListPrice DESC, p.ProductID ASC",
+        "SELECT TOP (10) p.ProductID, p.ListPrice FROM Production.Product AS p ORDER BY p.ListPrice DESC, p.ProductID",
+        "SELECT TOP (10) [p].[ProductID], [p].[ListPrice] FROM [Production].[Product] AS [p] ORDER BY [p].[ListPrice] DESC, [p].[ProductID] ASC",
+        "SELECT TOP (10) P.PRODUCTID, P.LISTPRICE FROM PRODUCTION.PRODUCT P ORDER BY P.LISTPRICE DESC, P.PRODUCTID ASC",
+    ],
+)
+def test_order_by_invariant_accepts_safe_direct_column_forms(sql):
+    outcome = compare_semantics(structural_case(ORDER_INVARIANT), sql, None, True)
+
+    assert outcome.status == "pass"
+    assert outcome.sql_structure_pass is True
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p ORDER BY p.ListPrice DESC",
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p",
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p ORDER BY p.ListPrice ASC, p.ProductID ASC",
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p ORDER BY p.ListPrice DESC, p.ProductID DESC",
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p ORDER BY p.ProductID ASC, p.ListPrice DESC",
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p ORDER BY p.ListPrice DESC, p.ProductID ASC, p.Name ASC",
+    ],
+)
+def test_order_by_invariant_rejects_known_ordering_violations(sql):
+    outcome = compare_semantics(structural_case(ORDER_INVARIANT), sql, None, True)
+
+    assert outcome.status == "fail"
+    assert outcome.semantic_pass is False
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT TOP 10 p.ProductID, p.ListPrice FROM Production.Product p ORDER BY 3 DESC, 1 ASC",
+        "SELECT TOP 10 p.ProductID, p.ListPrice AS Price FROM Production.Product p ORDER BY LOWER(p.ListPrice) DESC, p.ProductID ASC",
+    ],
+)
+def test_order_by_invariant_fails_closed_for_unsupported_expressions(sql):
+    outcome = compare_semantics(structural_case(ORDER_INVARIANT), sql, None, True)
+
+    assert outcome.status == "not_evaluated"
+    assert outcome.semantic_pass is None
+
+
+def test_inner_order_by_does_not_satisfy_root_order_requirement():
+    sql = """
+    SELECT TOP 10 q.ProductID, q.ListPrice
+    FROM (
+        SELECT p.ProductID, p.ListPrice
+        FROM Production.Product p
+        ORDER BY p.ListPrice DESC, p.ProductID ASC
+    ) AS q
+    """
+    outcome = compare_semantics(structural_case(ORDER_INVARIANT), sql, None, True)
+
+    assert outcome.status == "fail"
+    assert outcome.semantic_pass is False
+
+
+def test_malformed_order_by_invariant_is_not_evaluated():
+    outcome = compare_semantics(
+        structural_case("order_by:ListPrice SIDEWAYS,ProductID ASC"),
+        "SELECT ProductID FROM Production.Product",
+        None,
+        True,
+    )
+
+    assert outcome.status == "not_evaluated"
+    assert "unsupported_invariant:order_by" in outcome.failure_reasons[0]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT TOP 10 ProductID FROM Production.Product",
+        "SELECT TOP (10) ProductID FROM Production.Product",
+    ],
+)
+def test_top_invariant_accepts_literal_top_forms(sql):
+    outcome = compare_semantics(structural_case(TOP_INVARIANT), sql, None, True)
+
+    assert outcome.status == "pass"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT ProductID FROM Production.Product",
+        "SELECT TOP 9 ProductID FROM Production.Product",
+        "SELECT TOP (10) WITH TIES ProductID FROM Production.Product ORDER BY ListPrice DESC",
+        "SELECT TOP (10) PERCENT ProductID FROM Production.Product",
+    ],
+)
+def test_top_invariant_rejects_missing_wrong_and_special_top_forms(sql):
+    outcome = compare_semantics(structural_case(TOP_INVARIANT), sql, None, True)
+
+    assert outcome.status == "fail"
+    assert outcome.semantic_pass is False
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT TOP (@n) ProductID FROM Production.Product",
+        "SELECT TOP (1 + 9) ProductID FROM Production.Product",
+    ],
+)
+def test_top_invariant_does_not_infer_nonliteral_counts(sql):
+    outcome = compare_semantics(structural_case(TOP_INVARIANT), sql, None, True)
+
+    assert outcome.status == "not_evaluated"
+    assert outcome.semantic_pass is None
+
+
+def test_nested_top_does_not_satisfy_root_top_requirement():
+    sql = """
+    SELECT ProductID
+    FROM (
+        SELECT TOP 10 ProductID
+        FROM Production.Product
+    ) AS q
+    """
+    outcome = compare_semantics(structural_case(TOP_INVARIANT), sql, None, True)
+
+    assert outcome.status == "fail"
+    assert outcome.semantic_pass is False
+
+
+def test_invalid_top_invariant_is_not_evaluated():
+    outcome = compare_semantics(
+        structural_case("top:0"),
+        "SELECT TOP 10 ProductID FROM Production.Product",
+        None,
+        True,
+    )
+
+    assert outcome.status == "not_evaluated"
+    assert "unsupported_invariant:top:0" in outcome.failure_reasons
+
+
+def test_known_order_violation_takes_precedence_over_unsupported_invariant():
+    outcome = compare_semantics(
+        structural_case(ORDER_INVARIANT, "order_by:unsupported ???"),
+        "SELECT TOP 10 ProductID FROM Production.Product ORDER BY ListPrice DESC",
+        None,
+        True,
+    )
+
+    assert outcome.status == "fail"
+    assert outcome.semantic_pass is False

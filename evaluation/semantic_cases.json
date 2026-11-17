@@ -47,7 +47,11 @@
       "review_status": "verified",
       "review_notes": "Approved business definition: include all Production.Product rows, including zero-priced and discontinued products; return the 10 highest ListPrice products ordered by ListPrice descending and ProductID ascending for ties. Reference capture: 2026-11-17T10:39:19.497643+00:00 from AdventureWorks2025 on SQL Server 17.0.1000.7. Compare money values exactly with tagged Decimal precision; this does not establish live model accuracy.",
       "expected_columns": ["ProductID", "Name", "ListPrice"],
-      "required_sql_invariants": ["table:Production.Product"],
+      "required_sql_invariants": [
+        "table:Production.Product",
+        "order_by:ListPrice DESC,ProductID ASC",
+        "top:10"
+      ],
       "forbidden_sql_invariants": [],
       "expected_rows": [
         [749, "Road-150 Red, 62", {"__type__": "decimal", "value": "3578.2700"}],

@@ -9,6 +9,8 @@ Supported structural invariant grammar:
 
 * ``table:<name>``
 * ``aggregate:<SUM|COUNT|AVG|MIN|MAX>``
+* ``order_by:<column> <ASC|DESC>,<column> <ASC|DESC>``
+* ``top:<positive integer>``
 
 The grammar is deliberately narrow. Other non-empty invariant strings are
 unsupported until a later checkpoint defines and tests them.
@@ -190,23 +192,44 @@ def _compare_structure(
         return False, "sql_structure_parse_failed"
 
     checks = [(item, True) for item in required] + [(item, False) for item in forbidden]
+    known_failure = None
+    unsupported = None
     for invariant, required_invariant in checks:
         kind, separator, value = invariant.partition(":")
         normalized_kind = kind.strip().lower()
         normalized_value = value.strip()
-        if not separator or normalized_kind not in {"table", "aggregate"} or not normalized_value:
-            return None, f"unsupported_invariant:{invariant}"
+        if not separator or normalized_kind not in {"table", "aggregate", "order_by", "top"} or not normalized_value:
+            unsupported = unsupported or f"unsupported_invariant:{invariant}"
+            continue
 
-        matched = _matches_invariant(statement, normalized_kind, normalized_value)
+        matched, reason = _matches_invariant(
+            statement,
+            normalized_kind,
+            normalized_value,
+        )
+        if reason:
+            if matched is None:
+                unsupported = unsupported or reason
+            else:
+                known_failure = known_failure or reason
+            continue
         if required_invariant and not matched:
-            return False, f"missing_invariant:{invariant}"
+            known_failure = known_failure or f"missing_invariant:{invariant}"
         if not required_invariant and matched:
-            return False, f"forbidden_invariant:{invariant}"
+            known_failure = known_failure or f"forbidden_invariant:{invariant}"
 
+    if known_failure:
+        return False, known_failure
+    if unsupported:
+        return None, unsupported
     return True, None
 
 
-def _matches_invariant(statement: exp.Expression, kind: str, value: str) -> bool:
+def _matches_invariant(
+    statement: exp.Expression,
+    kind: str,
+    value: str,
+) -> tuple[bool | None, str | None]:
     target = _normalize_identifier(value)
     if kind == "table":
         for table in statement.find_all(exp.Table):
@@ -215,22 +238,87 @@ def _matches_invariant(statement: exp.Expression, kind: str, value: str) -> bool
                 ".".join(part for part in (table.db, table.name) if part)
             )
             if target in {table_name, qualified_name}:
-                return True
-        return False
+                return True, None
+        return False, None
 
-    aggregate_names = {"SUM", "COUNT", "AVG", "MIN", "MAX"}
-    target_upper = target.upper()
-    if target_upper not in aggregate_names:
-        return False
-    for node in statement.walk():
-        if isinstance(node, exp.AggFunc):
-            try:
-                if node.sql_name().upper() == target_upper:
-                    return True
-            except AttributeError:
-                if type(node).__name__.upper() == target_upper:
-                    return True
-    return False
+    if kind == "aggregate":
+        aggregate_names = {"SUM", "COUNT", "AVG", "MIN", "MAX"}
+        target_upper = target.upper()
+        if target_upper not in aggregate_names:
+            return None, f"unsupported_invariant:{kind}:{value}"
+        for node in statement.walk():
+            if isinstance(node, exp.AggFunc):
+                try:
+                    if node.sql_name().upper() == target_upper:
+                        return True, None
+                except AttributeError:
+                    if type(node).__name__.upper() == target_upper:
+                        return True, None
+        return False, None
+
+    if kind == "order_by":
+        expected = _parse_order_by_invariant(value)
+        if expected is None:
+            return None, f"unsupported_invariant:order_by:{value}"
+        order = statement.args.get("order")
+        if order is None:
+            return False, None
+        actual = order.expressions
+        if len(actual) != len(expected):
+            return False, None
+        for ordered, (expected_column, expected_direction) in zip(actual, expected):
+            if not isinstance(ordered.this, exp.Column):
+                return None, "unsupported_order_by_expression"
+            actual_column = _normalize_identifier(ordered.this.name)
+            if actual_column != expected_column:
+                return False, None
+            actual_direction = "DESC" if ordered.args.get("desc") else "ASC"
+            if actual_direction != expected_direction:
+                return False, None
+        return True, None
+
+    if kind == "top":
+        if not value.isdigit() or int(value) < 1:
+            return None, f"unsupported_invariant:top:{value}"
+        limit = statement.args.get("limit")
+        if limit is None:
+            return False, None
+        expression = limit.args.get("expression")
+        if not isinstance(expression, exp.Literal) or expression.is_string:
+            return None, "unsupported_top_expression"
+        options = limit.args.get("limit_options")
+        if options is not None and (
+            options.args.get("with_ties") or options.args.get("percent")
+        ):
+            return False, None
+        if not expression.is_int or int(expression.this) != int(value):
+            return False, None
+        return True, None
+
+    return None, f"unsupported_invariant:{kind}:{value}"
+
+
+def _parse_order_by_invariant(value: str) -> list[tuple[str, str]] | None:
+    """Parse the deliberately narrow direct-column ordering grammar."""
+
+    specifications = [item.strip() for item in value.split(",")]
+    if not specifications or any(not item for item in specifications):
+        return None
+    parsed = []
+    for specification in specifications:
+        tokens = specification.split()
+        if len(tokens) == 1:
+            column, direction = tokens[0], "ASC"
+        elif len(tokens) == 2 and tokens[1].upper() in {"ASC", "DESC"}:
+            column, direction = tokens
+            direction = direction.upper()
+        else:
+            return None
+        normalized_column = _normalize_identifier(column.split(".")[-1])
+        if not normalized_column or any(not part for part in column.split(".")):
+            return None
+        parsed.append((normalized_column, direction))
+    return parsed
 
 
 def _normalize_identifier(value: str) -> str:

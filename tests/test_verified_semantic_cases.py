@@ -111,6 +111,20 @@ def test_aw004_monetary_change_order_change_and_missing_row_fail():
     assert compare_semantics(case, AW004_SQL, missing_row, True).status == "fail"
 
 
+def test_aw004_historical_pilot_sql_now_fails_strengthened_structure():
+    _, cases = load_cases()
+    case = cases["AW2025-004"]
+    historical_sql = """SELECT TOP 10 p.ProductID, p.Name, p.ListPrice
+FROM Production.Product p
+ORDER BY p.ListPrice DESC;"""
+
+    outcome = compare_semantics(case, historical_sql, result_for(case), True)
+
+    assert outcome.status == "fail"
+    assert outcome.semantic_pass is False
+    assert "missing_invariant:order_by:ListPrice DESC,ProductID ASC" in outcome.failure_reasons
+
+
 def test_aw012_complete_result_passes_in_any_order():
     _, cases = load_cases()
     case = cases["AW2025-012"]
@@ -180,7 +194,11 @@ def test_verified_cases_have_complete_rows_and_supported_invariants():
     _, cases = load_cases()
     assert len(cases["AW2025-004"]["expected_rows"]) == 10
     assert len(cases["AW2025-012"]["expected_rows"]) == 109
-    assert cases["AW2025-004"]["required_sql_invariants"] == ["table:Production.Product"]
+    assert cases["AW2025-004"]["required_sql_invariants"] == [
+        "table:Production.Product",
+        "order_by:ListPrice DESC,ProductID ASC",
+        "top:10",
+    ]
     assert cases["AW2025-012"]["required_sql_invariants"] == [
         "table:Sales.Customer",
         "table:Sales.SalesOrderHeader",
