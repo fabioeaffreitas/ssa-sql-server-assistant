@@ -131,6 +131,13 @@ def _texts(elements):
     return [element.value for element in elements]
 
 
+def test_app_uses_supported_streamlit_width_api():
+    source = APP_PATH.read_text(encoding="utf-8")
+
+    assert "use_container_width" not in source
+    assert source.count('width="stretch"') == 3
+
+
 def test_risk_advisory_is_shown_once_with_successful_results(monkeypatch):
     app, ask = _run_app(
         monkeypatch,

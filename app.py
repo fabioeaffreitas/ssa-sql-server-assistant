@@ -90,7 +90,7 @@ def render_token_tracker() -> None:
             f"Output: {st.session_state.completion_token_total:,}"
         )
 
-        if st.button("Reset token tracker", use_container_width=True):
+        if st.button("Reset token tracker", width="stretch"):
             for key in (
                 "token_total", "prompt_token_total", "completion_token_total", "token_history"
             ):
@@ -102,7 +102,7 @@ def render_token_tracker() -> None:
                 st.dataframe(
                     pd.DataFrame(st.session_state.token_history),
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
 
@@ -213,7 +213,7 @@ if st.button("Ask SSA", type="primary", disabled=not question.strip()):
 
                 st.dataframe(
                     df,
-                    use_container_width=True,
+                    width="stretch",
                     column_config=column_config,
                 )
 
