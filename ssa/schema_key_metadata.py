@@ -131,6 +131,36 @@ def fingerprint_schema_metadata(metadata: Mapping[str, Any]) -> str:
     """
 
     canonical = _validated_metadata_for_fingerprint(metadata)
+    return _hash_canonical_payload(canonical)
+
+
+def fingerprint_schema_semantic_payload(
+    metadata: Mapping[str, Any],
+) -> str:
+    """Fingerprint a standalone version-2 semantic metadata document.
+
+    This entry point intentionally accepts version 2 metadata before its
+    provenance object is attached. It rejects provenance and all reserved
+    capture fields rather than silently discarding them. Complete version-2
+    documents must continue to use :func:`fingerprint_schema_metadata`, which
+    validates their provenance strictly.
+    """
+
+    canonical = _validated_semantic_metadata(metadata)
+    version = canonical.get("metadata_format_version")
+    if version != 2:
+        raise ValueError("semantic metadata must use supported version 2")
+    if "provenance" in canonical:
+        raise ValueError("semantic metadata must not contain provenance")
+    if any(field in canonical for field in _VOLATILE_FINGERPRINT_FIELDS):
+        raise ValueError("semantic metadata contains reserved capture fields")
+
+    return _hash_canonical_payload(
+        _semantic_payload_projection(canonical, versioned=True)
+    )
+
+
+def _hash_canonical_payload(canonical: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         canonical,
         ensure_ascii=False,
@@ -168,6 +198,20 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def _validated_metadata_for_fingerprint(
     metadata: Mapping[str, Any],
 ) -> dict[str, Any]:
+    canonical = _validated_semantic_metadata(metadata)
+
+    versioned = "metadata_format_version" in canonical
+    if versioned:
+        # The provenance contract validates the version, timestamp, identity,
+        # and stored digest. Its values remain outside semantic content.
+        parse_capture_provenance(canonical)
+
+    return _semantic_payload_projection(canonical, versioned=versioned)
+
+
+def _validated_semantic_metadata(
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
     if not isinstance(metadata, Mapping):
         raise ValueError("schema metadata root must be an object")
 
@@ -194,14 +238,7 @@ def _validated_metadata_for_fingerprint(
         if isinstance(obj, dict) and isinstance(obj.get("foreign_keys", []), list)
     )
     _validate_optional_count(canonical, "foreign_key_count", foreign_key_count)
-
-    versioned = "metadata_format_version" in canonical
-    if versioned:
-        # The provenance contract validates the version, timestamp, identity,
-        # and stored digest. Its values remain outside semantic content.
-        parse_capture_provenance(canonical)
-
-    return _semantic_payload_projection(canonical, versioned=versioned)
+    return canonical
 
 
 def _semantic_payload_projection(
@@ -341,5 +378,6 @@ __all__ = [
     "SchemaKeyMetadata",
     "fingerprint_schema_metadata",
     "fingerprint_schema_metadata_json",
+    "fingerprint_schema_semantic_payload",
     "load_primary_keys",
 ]
