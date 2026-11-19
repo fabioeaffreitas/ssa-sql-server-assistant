@@ -1,7 +1,20 @@
 import json
+from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
+from ssa.schema_capture_provenance import (
+    DatabaseIdentityMismatchError,
+    InvalidFingerprintError,
+    InvalidServerIdentityError,
+    InvalidTimestampError,
+    SQLServerIdentityEvidence,
+    SchemaCaptureProvenance,
+    MissingProvenanceError,
+    serialize_capture_provenance,
+    UnsupportedMetadataVersionError,
+)
 from ssa.schema_key_metadata import (
     fingerprint_schema_metadata,
     fingerprint_schema_metadata_json,
@@ -129,6 +142,37 @@ def fingerprint_payload():
     }
 
 
+def versioned_payload():
+    payload = fingerprint_payload()
+    provenance = serialize_capture_provenance(
+        SchemaCaptureProvenance(
+            snapshot_id="capture-1",
+            captured_at_utc=datetime(
+                2026,
+                11,
+                19,
+                12,
+                34,
+                56,
+                123456,
+                tzinfo=timezone.utc,
+            ),
+            database="AdventureWorks2025",
+            server_identity=SQLServerIdentityEvidence(
+                server_name="SQLHOST\\SQLEXPRESS",
+                instance_name="SQLEXPRESS",
+                database_id=7,
+                database_guid="11111111-2222-3333-4444-555555555555",
+            ),
+            content_fingerprint="a" * 64,
+            server_version="17.0.1000.7",
+            capture_tool_version="ssa-schema-export/1",
+        )
+    )
+    payload.update(provenance)
+    return payload
+
+
 def test_valid_metadata_extracts_ordered_table_keys_only(tmp_path):
     result = load_primary_keys(
         write_metadata(tmp_path, valid_payload()),
@@ -236,6 +280,146 @@ def test_fingerprint_is_stable_for_object_order_and_json_whitespace():
     assert first == second
     assert len(first) == 64
     assert first == first.lower()
+
+
+def test_legacy_fingerprint_digest_remains_unchanged():
+    assert fingerprint_schema_metadata(fingerprint_payload()) == (
+        "503a12b67162ee645187e1aa6fec115800ca45cf97112c51c5e5e2cef7795829"
+    )
+
+
+def test_versioned_metadata_fingerprints_successfully():
+    assert len(fingerprint_schema_metadata(versioned_payload())) == 64
+
+
+@pytest.mark.parametrize(
+    "provenance_update",
+    [
+        {"snapshot_id": "capture-2"},
+        {"captured_at_utc": datetime(2027, 1, 2, 3, 4, 5, tzinfo=timezone.utc)},
+        {
+            "server_identity": SQLServerIdentityEvidence(
+                server_name="OTHER-SERVER",
+                instance_name="OTHER",
+                database_id=8,
+                database_guid="66666666-7777-8888-9999-000000000000",
+            )
+        },
+        {"server_version": "18.0.1"},
+        {"capture_tool_version": "ssa-schema-export/2"},
+        {"content_fingerprint": "b" * 64},
+    ],
+)
+def test_capture_provenance_changes_do_not_change_semantic_fingerprint(
+    provenance_update,
+):
+    first = versioned_payload()
+    base = SchemaCaptureProvenance(
+        snapshot_id="capture-1",
+        captured_at_utc=datetime(
+            2026,
+            11,
+            19,
+            12,
+            34,
+            56,
+            123456,
+            tzinfo=timezone.utc,
+        ),
+        database="AdventureWorks2025",
+        server_identity=SQLServerIdentityEvidence(
+            server_name="SQLHOST\\SQLEXPRESS",
+            instance_name="SQLEXPRESS",
+            database_id=7,
+            database_guid="11111111-2222-3333-4444-555555555555",
+        ),
+        content_fingerprint="a" * 64,
+        server_version="17.0.1000.7",
+        capture_tool_version="ssa-schema-export/1",
+    )
+    changed = replace(base, **provenance_update)
+    second = versioned_payload()
+    second.update(serialize_capture_provenance(changed))
+
+    assert fingerprint_schema_metadata(first) == fingerprint_schema_metadata(second)
+
+
+def test_root_database_change_changes_fingerprint():
+    first = versioned_payload()
+    second = versioned_payload()
+    second["database"] = "OtherDatabase"
+    second["provenance"]["database"] = "OtherDatabase"
+    assert fingerprint_schema_metadata(first) != fingerprint_schema_metadata(second)
+
+
+def test_root_format_version_is_semantically_significant():
+    legacy = fingerprint_payload()
+    versioned = versioned_payload()
+    assert fingerprint_schema_metadata(legacy) != fingerprint_schema_metadata(versioned)
+
+
+def test_nested_semantic_provenance_field_is_not_excluded():
+    first = versioned_payload()
+    second = versioned_payload()
+    first["tables"]["Catalog.Item"]["columns"][0]["provenance"] = {
+        "source": "catalog-a"
+    }
+    second["tables"]["Catalog.Item"]["columns"][0]["provenance"] = {
+        "source": "catalog-b"
+    }
+    assert fingerprint_schema_metadata(first) != fingerprint_schema_metadata(second)
+
+
+def test_invalid_versioned_provenance_is_rejected():
+    unsupported = versioned_payload()
+    unsupported["metadata_format_version"] = 3
+    with pytest.raises(UnsupportedMetadataVersionError):
+        fingerprint_schema_metadata(unsupported)
+
+    invalid_type = versioned_payload()
+    invalid_type["metadata_format_version"] = "2"
+    with pytest.raises(UnsupportedMetadataVersionError):
+        fingerprint_schema_metadata(invalid_type)
+
+    missing = versioned_payload()
+    del missing["provenance"]
+    with pytest.raises(MissingProvenanceError):
+        fingerprint_schema_metadata(missing)
+
+    malformed = versioned_payload()
+    malformed["provenance"] = "invalid"
+    with pytest.raises(MissingProvenanceError):
+        fingerprint_schema_metadata(malformed)
+
+
+def test_invalid_versioned_provenance_fields_are_rejected():
+    database_mismatch = versioned_payload()
+    database_mismatch["provenance"]["database"] = "OtherDatabase"
+    with pytest.raises(DatabaseIdentityMismatchError):
+        fingerprint_schema_metadata(database_mismatch)
+
+    invalid_timestamp = versioned_payload()
+    invalid_timestamp["provenance"]["captured_at_utc"] = "not-a-timestamp"
+    with pytest.raises(InvalidTimestampError):
+        fingerprint_schema_metadata(invalid_timestamp)
+
+    invalid_fingerprint = versioned_payload()
+    invalid_fingerprint["provenance"]["content_fingerprint"] = "A" * 64
+    with pytest.raises(InvalidFingerprintError):
+        fingerprint_schema_metadata(invalid_fingerprint)
+
+    invalid_identity = versioned_payload()
+    invalid_identity["provenance"]["server_identity"] = {"database_id": 7}
+    with pytest.raises(InvalidServerIdentityError):
+        fingerprint_schema_metadata(invalid_identity)
+
+
+def test_legacy_root_provenance_field_is_not_silently_excluded():
+    first = fingerprint_payload()
+    second = fingerprint_payload()
+    first["provenance"] = {"semantic_value": "one"}
+    second["provenance"] = {"semantic_value": "two"}
+    assert fingerprint_schema_metadata(first) != fingerprint_schema_metadata(second)
 
 
 def test_fingerprint_changes_for_semantic_fields():

@@ -8,6 +8,8 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
+from ssa.schema_capture_provenance import parse_capture_provenance
+
 
 _FINGERPRINT_DOMAIN = "ssa-schema-metadata-fingerprint-v1"
 _VOLATILE_FINGERPRINT_FIELDS = frozenset(
@@ -193,10 +195,29 @@ def _validated_metadata_for_fingerprint(
     )
     _validate_optional_count(canonical, "foreign_key_count", foreign_key_count)
 
+    versioned = "metadata_format_version" in canonical
+    if versioned:
+        # The provenance contract validates the version, timestamp, identity,
+        # and stored digest. Its values remain outside semantic content.
+        parse_capture_provenance(canonical)
+
+    return _semantic_payload_projection(canonical, versioned=versioned)
+
+
+def _semantic_payload_projection(
+    metadata: Mapping[str, Any],
+    *,
+    versioned: bool,
+) -> dict[str, Any]:
+    """Project semantic root fields without recursively dropping names."""
+
+    excluded = set(_VOLATILE_FINGERPRINT_FIELDS)
+    if versioned:
+        excluded.add("provenance")
     return {
         key: value
-        for key, value in canonical.items()
-        if key not in _VOLATILE_FINGERPRINT_FIELDS
+        for key, value in metadata.items()
+        if key not in excluded
     }
 
 
