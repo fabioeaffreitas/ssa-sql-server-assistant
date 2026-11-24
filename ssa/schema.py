@@ -9,6 +9,78 @@ primary keys, and foreign keys.
 from collections import defaultdict
 
 
+class SchemaColumnResolutionError(RuntimeError):
+    """Raised when visible column metadata cannot be resolved safely."""
+
+
+def _resolve_column_type(row, object_key):
+    """Resolve one column type without allowing silent row loss."""
+
+    declared_count = _valid_type_match_count(
+        row.declared_type_match_count,
+        object_key,
+        row.column_name,
+        "declared",
+    )
+    system_count = _valid_type_match_count(
+        row.system_type_match_count,
+        object_key,
+        row.column_name,
+        "system",
+    )
+
+    if declared_count > 1:
+        raise SchemaColumnResolutionError(
+            f"ambiguous declared type for {object_key}.{row.column_name} "
+            f"(matches={declared_count})"
+        )
+
+    if declared_count == 1:
+        return _valid_type_name(
+            row.declared_type_name,
+            object_key,
+            row.column_name,
+            "declared",
+        )
+
+    if system_count > 1:
+        raise SchemaColumnResolutionError(
+            f"ambiguous system type for {object_key}.{row.column_name} "
+            f"(matches={system_count})"
+        )
+
+    if system_count == 1:
+        return _valid_type_name(
+            row.system_type_name,
+            object_key,
+            row.column_name,
+            "system fallback",
+        )
+
+    raise SchemaColumnResolutionError(
+        f"unresolved type for {object_key}.{row.column_name} "
+        f"(declared_matches={declared_count}, system_matches={system_count})"
+    )
+
+
+def _valid_type_match_count(value, object_key, column_name, lookup_name):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SchemaColumnResolutionError(
+            f"invalid {lookup_name} type match count for "
+            f"{object_key}.{column_name}"
+        )
+    return value
+
+
+def _valid_type_name(value, object_key, column_name, lookup_name):
+    if not isinstance(value, str) or not value.strip():
+        raise SchemaColumnResolutionError(
+            f"invalid {lookup_name} type name for "
+            f"{object_key}.{column_name}"
+        )
+    return value
+
+
 def get_schema_descriptions(connection):
     """Retrieve table and view descriptions from MS_Description."""
 
@@ -73,7 +145,10 @@ def get_schema_metadata(connection):
         o.name AS object_name,
         RTRIM(o.type) AS object_type,
         c.name AS column_name,
-        ty.name AS data_type,
+        COALESCE(declared_type.match_count, 0) AS declared_type_match_count,
+        declared_type.type_name AS declared_type_name,
+        COALESCE(system_type.match_count, 0) AS system_type_match_count,
+        system_type.type_name AS system_type_name,
         c.max_length,
         c.precision,
         c.scale,
@@ -85,8 +160,27 @@ def get_schema_metadata(connection):
         ON o.schema_id = s.schema_id
     INNER JOIN sys.columns AS c
         ON o.object_id = c.object_id
-    INNER JOIN sys.types AS ty
-        ON c.user_type_id = ty.user_type_id
+    LEFT JOIN (
+        SELECT
+            user_type_id,
+            COUNT(*) AS match_count,
+            MIN(name) AS type_name
+        FROM sys.types
+        GROUP BY user_type_id
+    ) AS declared_type
+        ON declared_type.user_type_id = c.user_type_id
+    LEFT JOIN (
+        SELECT
+            system_type_id,
+            COUNT(*) AS match_count,
+            MIN(name) AS type_name
+        FROM sys.types
+        WHERE user_type_id = system_type_id
+          AND is_user_defined = 0
+          AND is_assembly_type = 0
+        GROUP BY system_type_id
+    ) AS system_type
+        ON system_type.system_type_id = c.system_type_id
     WHERE o.type IN ('U', 'V')
     ORDER BY s.name, o.name, c.column_id;
     """
@@ -95,11 +189,17 @@ def get_schema_metadata(connection):
 
     tables = {}
     views = {}
+    seen_column_names = {}
+    seen_column_ids = {}
 
     for row in cursor.fetchall():
         object_key = f"{row.schema_name}.{row.object_name}"
 
         object_type = row.object_type.strip()
+        if object_type not in {"U", "V"}:
+            raise SchemaColumnResolutionError(
+                f"unsupported object type for {object_key}: {object_type!r}"
+            )
         target = tables if object_type == "U" else views
 
         if object_key not in target:
@@ -113,9 +213,23 @@ def get_schema_metadata(connection):
                 "columns": [],
             }
 
+            seen_column_names[object_key] = set()
+            seen_column_ids[object_key] = set()
+
             if object_type == "U":
                 target[object_key]["primary_keys"] = []
                 target[object_key]["foreign_keys"] = []
+
+        if row.column_name in seen_column_names[object_key]:
+            raise SchemaColumnResolutionError(
+                f"duplicate column name for {object_key}.{row.column_name}"
+            )
+        if row.column_id in seen_column_ids[object_key]:
+            raise SchemaColumnResolutionError(
+                f"duplicate column id for {object_key}.{row.column_name}"
+            )
+        seen_column_names[object_key].add(row.column_name)
+        seen_column_ids[object_key].add(row.column_id)
 
         column_description = descriptions.get(
             object_key, {}
@@ -123,7 +237,7 @@ def get_schema_metadata(connection):
 
         target[object_key]["columns"].append({
             "name": row.column_name,
-            "data_type": row.data_type,
+            "data_type": _resolve_column_type(row, object_key),
             "max_length": row.max_length,
             "precision": row.precision,
             "scale": row.scale,
