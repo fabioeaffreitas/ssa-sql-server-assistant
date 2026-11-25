@@ -164,11 +164,21 @@ def test_index_schema_preserves_configuration_and_uses_upsert(monkeypatch, tmp_p
     )
     captured = {}
 
+    class FakeEmbedding:
+        @staticmethod
+        def name():
+            return "default"
+
+    monkeypatch.setattr(schema_index, "create_schema_embedding_function", lambda: FakeEmbedding())
+
     class FakeCollection:
         def upsert(self, **kwargs):
             captured["upsert"] = kwargs
 
     class FakeClient:
+        def get_collection(self, **kwargs):
+            raise schema_index.NotFoundError("missing")
+
         def get_or_create_collection(self, **kwargs):
             captured["collection"] = kwargs
             return FakeCollection()
@@ -188,6 +198,8 @@ def test_index_schema_preserves_configuration_and_uses_upsert(monkeypatch, tmp_p
     schema_index.index_schema()
 
     assert captured["client"] == {"path": str(tmp_path / "chroma_db")}
-    assert captured["collection"] == {"name": "ssa_schema"}
+    assert captured["collection"]["name"] == "ssa_schema"
+    assert captured["collection"]["metadata"] == {"hnsw:space": "l2"}
+    assert captured["collection"]["embedding_function"].name() == "default"
     assert captured["upsert"]["ids"] == ["table:dbo.Example"]
     assert "Primary key: ID" in captured["upsert"]["documents"][0]

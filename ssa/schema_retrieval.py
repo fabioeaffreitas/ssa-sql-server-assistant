@@ -9,6 +9,8 @@ from pathlib import Path
 
 import chromadb
 
+from ssa.schema_embedding import create_schema_embedding_function
+
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CHROMA_PATH = ROOT_DIR / "data" / "chroma_db"
@@ -22,7 +24,10 @@ def tokenize(text):
 
 def search_schema(question, n_results=5):
     client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-    collection = client.get_collection(name=COLLECTION_NAME)
+    collection = client.get_collection(
+        name=COLLECTION_NAME,
+        embedding_function=create_schema_embedding_function(),
+    )
 
     semantic_results = collection.query(
         query_texts=[question],

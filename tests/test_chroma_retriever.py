@@ -67,6 +67,12 @@ def test_custom_configuration_forwards_path_collection_and_full_query(monkeypatc
         "distances": [[0.2]],
     })
     client = FakeClient(collection)
+    class FakeEmbedding:
+        @staticmethod
+        def name():
+            return "default"
+
+    monkeypatch.setattr(retriever_module, "create_schema_embedding_function", lambda: FakeEmbedding())
     monkeypatch.setattr(
         retriever_module.chromadb,
         "PersistentClient",
@@ -76,7 +82,8 @@ def test_custom_configuration_forwards_path_collection_and_full_query(monkeypatc
     retriever = ChromaSchemaRetriever(tmp_path / "custom", "custom_collection")
     documents = retriever.retrieve("customer names", limit=1)
 
-    assert client.collection_args == {"name": "custom_collection"}
+    assert client.collection_args["name"] == "custom_collection"
+    assert client.collection_args["embedding_function"].name() == "default"
     assert collection.query_args == {
         "query_texts": ["customer names"],
         "n_results": 1,

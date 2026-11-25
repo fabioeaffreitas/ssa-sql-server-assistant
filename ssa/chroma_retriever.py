@@ -8,6 +8,7 @@ import chromadb
 
 from ssa import schema_retrieval
 from ssa.contracts import SchemaDocument, SchemaRetriever
+from ssa.schema_embedding import create_schema_embedding_function
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,10 @@ class ChromaSchemaRetriever:
         """Run the existing hybrid algorithm against custom Chroma settings."""
 
         client = chromadb.PersistentClient(path=str(self.chroma_path))
-        collection = client.get_collection(name=self.collection_name)
+        collection = client.get_collection(
+            name=self.collection_name,
+            embedding_function=create_schema_embedding_function(),
+        )
         semantic_results = collection.query(
             query_texts=[question],
             n_results=collection.count(),
