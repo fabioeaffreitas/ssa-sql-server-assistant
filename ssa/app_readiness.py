@@ -38,11 +38,23 @@ def collect_readiness(
 
     try:
         schema_status = (schema_inspector or inspect_schema_index)()
-        if schema_status.available:
+        if schema_status.available and schema_status.alignment == "verified":
             checks.append(ReadinessCheck(
                 name="Schema index",
                 status="Ready",
-                message=f"{schema_status.document_count} documents available.",
+                message=(
+                    f"{schema_status.document_count} documents available; "
+                    "metadata and index alignment verified."
+                ),
+            ))
+        elif schema_status.available:
+            checks.append(ReadinessCheck(
+                name="Schema index",
+                status="Needs attention",
+                message=(
+                    schema_status.message
+                    or f"{schema_status.document_count} documents available; alignment is unverified."
+                ),
             ))
         else:
             checks.append(ReadinessCheck(

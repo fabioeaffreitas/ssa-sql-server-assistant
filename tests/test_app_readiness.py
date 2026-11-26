@@ -27,13 +27,17 @@ def valid_ollama():
 
 def test_all_readiness_checks_valid():
     checks = collect_readiness(
-        schema_inspector=lambda: SchemaIndexStatus(True, 12),
+        schema_inspector=lambda: SchemaIndexStatus(True, 12, alignment="verified"),
         sql_validator=valid_sql,
         ollama_validator=valid_ollama,
     )
 
     assert checks == (
-        ReadinessCheck("Schema index", "Ready", "12 documents available."),
+        ReadinessCheck(
+            "Schema index",
+            "Ready",
+            "12 documents available; metadata and index alignment verified.",
+        ),
         ReadinessCheck(
             "SQL Server configuration",
             "Ready",
@@ -83,7 +87,7 @@ def test_invalid_sql_configuration_does_not_hide_other_checks():
         raise ConfigurationError("SQL_PASSWORD is required.")
 
     checks = collect_readiness(
-        schema_inspector=lambda: SchemaIndexStatus(True, 1),
+        schema_inspector=lambda: SchemaIndexStatus(True, 1, alignment="verified"),
         sql_validator=fail_sql,
         ollama_validator=valid_ollama,
     )
@@ -99,7 +103,7 @@ def test_invalid_ollama_configuration_does_not_hide_other_checks():
         raise ConfigurationError("OLLAMA_BASE_URL must be valid.")
 
     checks = collect_readiness(
-        schema_inspector=lambda: SchemaIndexStatus(True, 1),
+        schema_inspector=lambda: SchemaIndexStatus(True, 1, alignment="verified"),
         sql_validator=valid_sql,
         ollama_validator=fail_ollama,
     )
@@ -118,7 +122,7 @@ def test_unexpected_configuration_errors_are_safe_and_independent():
         raise RuntimeError("secret endpoint")
 
     checks = collect_readiness(
-        schema_inspector=lambda: SchemaIndexStatus(True, 1),
+        schema_inspector=lambda: SchemaIndexStatus(True, 1, alignment="verified"),
         sql_validator=fail_sql,
         ollama_validator=fail_ollama,
     )
@@ -137,7 +141,7 @@ def test_readiness_uses_only_injected_non_network_checks():
 
     def schema():
         calls.append("schema")
-        return SchemaIndexStatus(True, 1)
+        return SchemaIndexStatus(True, 1, alignment="verified")
 
     def sql():
         calls.append("sql")
