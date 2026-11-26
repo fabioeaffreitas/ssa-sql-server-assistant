@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 # When run by file path, Python puts ``scripts`` on sys.path instead of the
 # repository root. Keep module execution unchanged while making the documented
@@ -68,7 +68,108 @@ ORDER BY
         "ordering_policy": "SalesOrderCount descending, CustomerID ascending tie-breaker; semantic comparison may be order-insensitive.",
         "top_n": None,
     },
+    {
+        "case_id": "AW2025-007",
+        "question": "Show total sales by sales territory.",
+        "sql": """SELECT
+    st.TerritoryID,
+    CASE
+        WHEN st.TerritoryID IS NULL THEN N'[Unassigned]'
+        ELSE st.Name
+    END AS TerritoryName,
+    SUM(COALESCE(soh.TotalDue, CONVERT(money, 0))) AS TotalSales
+FROM Sales.SalesTerritory AS st
+FULL OUTER JOIN Sales.SalesOrderHeader AS soh
+    ON soh.TerritoryID = st.TerritoryID
+GROUP BY
+    st.TerritoryID,
+    st.Name
+ORDER BY
+    CASE WHEN st.TerritoryID IS NULL THEN 1 ELSE 0 END,
+    st.TerritoryID ASC;""",
+        "ordering_policy": "Deterministic territory ordering; semantic comparison is order-insensitive.",
+        "top_n": None,
+        "expected_columns": ["TerritoryID", "TerritoryName", "TotalSales"],
+        "required_sql_invariants": [
+            "table:Sales.SalesOrderHeader",
+            "table:Sales.SalesTerritory",
+            "aggregate:SUM",
+        ],
+        "forbidden_sql_invariants": [],
+        "order_sensitive": False,
+        "numeric_tolerance": None,
+        "business_definition": (
+            "TotalDue includes tax and freight; all order statuses are included; "
+            "territories without orders have zero sales; NULL or unmatched territory "
+            "attribution is preserved as [Unassigned] without an invented ID."
+        ),
+    },
+    {
+        "case_id": "AW2025-008",
+        "question": "Show the number of sales orders per year.",
+        "sql": """SELECT
+    DATEPART(YEAR, soh.OrderDate) AS OrderYear,
+    COUNT(soh.SalesOrderID) AS SalesOrderCount
+FROM Sales.SalesOrderHeader AS soh
+GROUP BY DATEPART(YEAR, soh.OrderDate)
+ORDER BY OrderYear ASC;""",
+        "ordering_policy": "Calendar years ascending; semantic comparison is order-insensitive.",
+        "top_n": None,
+        "expected_columns": ["OrderYear", "SalesOrderCount"],
+        "required_sql_invariants": [
+            "table:Sales.SalesOrderHeader",
+            "aggregate:COUNT",
+        ],
+        "forbidden_sql_invariants": [],
+        "order_sensitive": False,
+        "numeric_tolerance": None,
+        "business_definition": (
+            "Calendar year is derived from OrderDate; SalesOrderID is counted; "
+            "all represented years and all order statuses are included."
+        ),
+    },
+    {
+        "case_id": "AW2025-010",
+        "question": "Show total sales for orders placed in 2024.",
+        "sql": """SELECT
+    SUM(soh.TotalDue) AS TotalSales
+FROM Sales.SalesOrderHeader AS soh
+WHERE soh.OrderDate >= CONVERT(datetime, '20240101', 112)
+  AND soh.OrderDate < CONVERT(datetime, '20250101', 112);""",
+        "ordering_policy": "Single aggregate row; no ordering applies.",
+        "top_n": None,
+        "expected_columns": ["TotalSales"],
+        "required_sql_invariants": [
+            "table:Sales.SalesOrderHeader",
+            "aggregate:SUM",
+        ],
+        "forbidden_sql_invariants": [],
+        "order_sensitive": False,
+        "numeric_tolerance": None,
+        "business_definition": (
+            "TotalDue includes tax and freight; OrderDate uses the half-open 2024 "
+            "calendar interval; all order statuses are included; no-match results "
+            "preserve NULL."
+        ),
+    },
 )
+
+REFERENCE_CASES_BY_ID = {case["case_id"]: case for case in REFERENCE_CASES}
+PILOT_CASE_IDS = ("AW2025-004", "AW2025-012")
+
+
+def select_reference_cases(case_ids: Sequence[str] | None = None) -> tuple[dict[str, Any], ...]:
+    """Select registered cases; omitted selection preserves the two-case pilot."""
+
+    selected_ids = list(PILOT_CASE_IDS if case_ids is None else case_ids)
+    if not selected_ids:
+        raise GroundTruthCaptureError("At least one reference case must be selected.")
+    if len(set(selected_ids)) != len(selected_ids):
+        raise GroundTruthCaptureError("Duplicate reference case IDs are not allowed.")
+    unknown = [case_id for case_id in selected_ids if case_id not in REFERENCE_CASES_BY_ID]
+    if unknown:
+        raise GroundTruthCaptureError(f"Unknown reference case ID: {unknown[0]}.")
+    return tuple(REFERENCE_CASES_BY_ID[case_id] for case_id in selected_ids)
 
 
 class GroundTruthCaptureError(RuntimeError):
@@ -109,6 +210,15 @@ def _capture_query(cursor: Any, case: dict[str, Any]) -> dict[str, Any]:
         )
 
     columns = [column[0] for column in cursor.description]
+    expected_columns = case.get("expected_columns")
+    if expected_columns is not None and columns != expected_columns:
+        raise GroundTruthCaptureError(
+            f"{case['case_id']} returned unexpected columns."
+        )
+    if case["case_id"] == "AW2025-010" and len(rows) != 1:
+        raise GroundTruthCaptureError(
+            "AW2025-010 must return exactly one aggregate row."
+        )
     serialized_rows = [
         [_json_value(value) for value in row]
         for row in rows
@@ -155,6 +265,7 @@ def capture_ground_truth(
     connection_factory: Callable[[], Any] = get_connection,
     configuration_validator: Callable[[], SQLConfiguration] = validate_sql_configuration,
     captured_at: datetime | None = None,
+    case_ids: Sequence[str] | None = None,
 ) -> Path:
     """Capture both reference results and return the written artifact path."""
 
@@ -172,6 +283,7 @@ def capture_ground_truth(
             "SQL_USERNAME must be SSA_ReadOnly for this capture."
         )
 
+    selected_cases = select_reference_cases(case_ids)
     connection = None
     cursor = None
     try:
@@ -180,7 +292,7 @@ def capture_ground_truth(
         identity = _validate_identity(cursor, configuration)
         captured_timestamp = captured_at or datetime.now(timezone.utc)
         cases = []
-        for case in REFERENCE_CASES:
+        for case in selected_cases:
             cases.append({
                 "case_id": case["case_id"],
                 "question": case["question"],
@@ -222,8 +334,18 @@ def capture_ground_truth(
 
 
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--case-id",
+        action="append",
+        dest="case_ids",
+        help="Registered case ID; repeat for a batch. Omit for the two-case pilot.",
+    )
+    args = parser.parse_args()
     try:
-        output_path = capture_ground_truth()
+        output_path = capture_ground_truth(case_ids=args.case_ids)
     except Exception as exc:
         print(f"Ground-truth capture failed: {type(exc).__name__}.")
         return 1

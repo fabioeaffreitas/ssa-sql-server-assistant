@@ -27,13 +27,14 @@ def configuration(database="AdventureWorks2025", trusted_connection=False):
 
 
 class FakeCursor:
-    def __init__(self, result_rows=None, identity=None, failure=None):
+    def __init__(self, result_rows=None, identity=None, failure=None, case_results=None):
         self.result_rows = list(result_rows or [
             [(1, "Widget", Decimal("12.3400"))],
             [],
         ])
         self.identity = identity or ("AdventureWorks2025", "SSA_ReadOnly", "16.0")
         self.failure = failure
+        self.case_results = case_results or {}
         self.description = []
         self.executed = []
         self.closed = False
@@ -49,7 +50,19 @@ class FakeCursor:
             self._current_rows = [self.identity]
             self._identity_pending = True
             return
-        if len(self.executed) == 2:
+        if "SalesTerritory" in sql:
+            self.description = [("TerritoryID",), ("TerritoryName",), ("TotalSales",)]
+            self._current_rows = self.case_results.get("AW2025-007", [])
+            return
+        elif "DATEPART(YEAR" in sql:
+            self.description = [("OrderYear",), ("SalesOrderCount",)]
+            self._current_rows = self.case_results.get("AW2025-008", [])
+            return
+        elif "20240101" in sql:
+            self.description = [("TotalSales",)]
+            self._current_rows = self.case_results.get("AW2025-010", [])
+            return
+        elif len(self.executed) == 2:
             self.description = [("ProductID",), ("Name",), ("ListPrice",)]
         else:
             self.description = [("CustomerID",), ("SalesOrderCount",)]
@@ -95,17 +108,141 @@ def run_capture(tmp_path, monkeypatch, cursor):
 
 
 def test_reference_cases_are_exact_and_select_only():
-    assert [case["case_id"] for case in capture.REFERENCE_CASES] == [
+    assert capture.PILOT_CASE_IDS == (
         "AW2025-004",
         "AW2025-012",
-    ]
-    assert [case["question"] for case in capture.REFERENCE_CASES] == [
+    )
+    assert [capture.REFERENCE_CASES_BY_ID[case_id]["question"] for case_id in (
+        "AW2025-004", "AW2025-012", "AW2025-007", "AW2025-008", "AW2025-010"
+    )] == [
         "Show the 10 most expensive products by list price.",
         "Show customers with more than 10 sales orders.",
+        "Show total sales by sales territory.",
+        "Show the number of sales orders per year.",
+        "Show total sales for orders placed in 2024.",
     ]
     for case in capture.REFERENCE_CASES:
         assert validate_sql(case["sql"]) == case["sql"].strip()
         assert case["sql"].lstrip().upper().startswith("SELECT")
+
+
+def test_default_capture_selects_only_the_two_pilot_cases():
+    assert [case["case_id"] for case in capture.select_reference_cases()] == list(
+        capture.PILOT_CASE_IDS
+    )
+
+
+def test_explicit_case_selection_is_deterministic_and_rejects_bad_ids():
+    assert [case["case_id"] for case in capture.select_reference_cases(
+        ["AW2025-010", "AW2025-007", "AW2025-008"]
+    )] == ["AW2025-010", "AW2025-007", "AW2025-008"]
+    for selection, message in ((["AW2025-999"], "Unknown"), (["AW2025-007", "AW2025-007"], "Duplicate"), ([], "At least one")):
+        with pytest.raises(capture.GroundTruthCaptureError, match=message):
+            capture.select_reference_cases(selection)
+
+
+def test_single_case_capture_uses_only_the_selected_registered_case(tmp_path, monkeypatch):
+    cursor = FakeCursor(case_results={"AW2025-008": [[2024, 5]]})
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    path = capture.capture_ground_truth(
+        tmp_path,
+        connection_factory=lambda: FakeConnection(cursor),
+        configuration_validator=lambda: configuration(),
+        captured_at=datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc),
+        case_ids=["AW2025-008"],
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert [case["case_id"] for case in document["cases"]] == ["AW2025-008"]
+
+
+def test_three_case_capture_preserves_columns_decimal_and_null(tmp_path, monkeypatch):
+    cursor = FakeCursor(case_results={
+        "AW2025-007": [(1, "Northwest", Decimal("12.3400")), (None, "[Unassigned]", Decimal("0.0000"))],
+        "AW2025-008": [(2023, 4), (2024, 5)],
+        "AW2025-010": [(None,)],
+    })
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    path = capture.capture_ground_truth(
+        tmp_path,
+        connection_factory=lambda: FakeConnection(cursor),
+        configuration_validator=lambda: configuration(),
+        captured_at=datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc),
+        case_ids=["AW2025-007", "AW2025-008", "AW2025-010"],
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert [case["case_id"] for case in document["cases"]] == [
+        "AW2025-007", "AW2025-008", "AW2025-010"
+    ]
+    assert document["cases"][0]["captured_result"]["rows"][0][2] == {
+        "__type__": "decimal", "value": "12.3400"
+    }
+    assert document["cases"][0]["captured_result"]["rows"][1][0] is None
+    assert document["cases"][2]["captured_result"]["row_count"] == 1
+
+
+def test_invalid_explicit_selection_is_rejected_before_connection(tmp_path, monkeypatch):
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    calls = []
+    with pytest.raises(capture.GroundTruthCaptureError, match="Unknown"):
+        capture.capture_ground_truth(
+            tmp_path,
+            connection_factory=lambda: calls.append(True),
+            configuration_validator=lambda: configuration(),
+            case_ids=["AW2025-999"],
+        )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "case_ids, message",
+    [(["AW2025-007", "AW2025-007"], "Duplicate"), ([], "At least one")],
+)
+def test_duplicate_or_empty_capture_selection_is_rejected_before_connection(
+    tmp_path, monkeypatch, case_ids, message
+):
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    calls = []
+    with pytest.raises(capture.GroundTruthCaptureError, match=message):
+        capture.capture_ground_truth(
+            tmp_path,
+            connection_factory=lambda: calls.append(True),
+            configuration_validator=lambda: configuration(),
+            case_ids=case_ids,
+        )
+    assert calls == []
+
+
+def test_selected_result_column_mismatch_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    cursor = FakeCursor(case_results={"AW2025-010": [(Decimal("1.00"),)]})
+    cursor.result_rows = []
+    original_execute = cursor.execute
+    def execute_with_wrong_columns(sql):
+        original_execute(sql)
+        if "20240101" in sql:
+            cursor.description = [("WrongColumn",)]
+    cursor.execute = execute_with_wrong_columns
+    with pytest.raises(capture.GroundTruthCaptureError, match="unexpected columns"):
+        capture.capture_ground_truth(
+            tmp_path,
+            connection_factory=lambda: FakeConnection(cursor),
+            configuration_validator=lambda: configuration(),
+            case_ids=["AW2025-010"],
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_aw2025_010_multiple_rows_are_rejected_during_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    cursor = FakeCursor(case_results={"AW2025-010": [(Decimal("1.00"),), (Decimal("2.00"),)]})
+    with pytest.raises(capture.GroundTruthCaptureError, match="exactly one aggregate row"):
+        capture.capture_ground_truth(
+            tmp_path,
+            connection_factory=lambda: FakeConnection(cursor),
+            configuration_validator=lambda: configuration(),
+            case_ids=["AW2025-010"],
+        )
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_capture_writes_complete_results_and_serializes_decimal_dates(tmp_path, monkeypatch):

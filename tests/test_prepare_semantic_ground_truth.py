@@ -79,6 +79,39 @@ def make_proposal(tmp_path):
     return json.loads(output_path.read_text(encoding="utf-8")), output_path
 
 
+def additional_capture():
+    cases = []
+    rows_by_id = {
+        "AW2025-007": [[1, "Northwest", {"__type__": "decimal", "value": "12.3400"}]],
+        "AW2025-008": [[2024, 5]],
+        "AW2025-010": [[None]],
+    }
+    for case_id, rows in rows_by_id.items():
+        registered = prepare.REFERENCE_CASES_BY_ID[case_id]
+        cases.append({
+            "case_id": case_id,
+            "question": registered["question"],
+            "reference_sql": registered["sql"],
+            "ordering_policy": registered["ordering_policy"],
+            "captured_result": {
+                "columns": registered["expected_columns"],
+                "rows": rows,
+                "row_count": len(rows),
+                "truncated": False,
+                "top_n_complete": None,
+            },
+        })
+    return {
+        "capture_schema_version": 1,
+        "captured_at_utc": "2026-11-17T10:39:19+00:00",
+        "database": {
+            "database_name": "AdventureWorks2025",
+            "sql_server_version": "17.0.1000.7",
+        },
+        "cases": cases,
+    }
+
+
 def test_valid_capture_prepares_both_pilot_expectations(tmp_path):
     proposal, output_path = make_proposal(tmp_path)
     cases = {case["case_id"]: case for case in proposal["dataset"]["cases"]}
@@ -242,4 +275,107 @@ def test_capture_timestamp_is_parseable_and_proposal_is_stable(tmp_path):
     datetime.fromisoformat(proposal["source_capture"]["captured_at_utc"])
     assert output_path.exists()
     assert output_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_selected_additional_cases_prepare_review_only_expectations(tmp_path):
+    original_dataset = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
+    capture_path = tmp_path / "additional.json"
+    dataset_path = tmp_path / "semantic_cases.json"
+    output_dir = tmp_path / "proposals"
+    write_json(capture_path, additional_capture())
+    write_dataset(dataset_path)
+
+    output_path = prepare.prepare_proposal(
+        capture_path,
+        dataset_path,
+        output_dir,
+        case_ids=["AW2025-007", "AW2025-008", "AW2025-010"],
+    )
+    proposal = json.loads(output_path.read_text(encoding="utf-8"))
+    cases = {case["case_id"]: case for case in proposal["dataset"]["cases"]}
+    assert cases["AW2025-007"]["expected_columns"] == [
+        "TerritoryID", "TerritoryName", "TotalSales"
+    ]
+    assert cases["AW2025-007"]["required_sql_invariants"] == [
+        "table:Sales.SalesOrderHeader",
+        "table:Sales.SalesTerritory",
+        "aggregate:SUM",
+    ]
+    assert cases["AW2025-008"]["expected_columns"] == [
+        "OrderYear", "SalesOrderCount"
+    ]
+    assert cases["AW2025-010"]["expected_rows"] == [[None]]
+    assert all(cases[case_id]["review_status"] == "review_required" for case_id in (
+        "AW2025-007", "AW2025-008", "AW2025-010"
+    ))
+    assert "TotalDue includes tax and freight" in cases["AW2025-007"]["review_notes"]
+    assert "AW2025-004" in cases
+    assert cases["AW2025-004"]["review_status"] == "verified"
+    for original_case in original_dataset["cases"]:
+        if original_case["case_id"] not in {"AW2025-007", "AW2025-008", "AW2025-010"}:
+            assert cases[original_case["case_id"]] == original_case
+    assert json.loads(DATASET_PATH.read_text(encoding="utf-8")) == original_dataset
+
+
+def test_aw2025_010_multiple_rows_are_rejected_in_proposal_evidence(tmp_path):
+    capture_data = additional_capture()
+    target = next(case for case in capture_data["cases"] if case["case_id"] == "AW2025-010")
+    target["captured_result"]["rows"] = [[None], [None]]
+    target["captured_result"]["row_count"] = 2
+    capture_path = tmp_path / "additional.json"
+    dataset_path = tmp_path / "semantic_cases.json"
+    write_json(capture_path, capture_data)
+    write_dataset(dataset_path)
+
+    with pytest.raises(prepare.GroundTruthPreparationError, match="exactly one aggregate row"):
+        prepare.prepare_proposal(
+            capture_path,
+            dataset_path,
+            tmp_path / "output",
+            case_ids=["AW2025-007", "AW2025-008", "AW2025-010"],
+        )
+    assert not (tmp_path / "output").exists()
+
+
+def test_selected_verified_nonpilot_case_is_rejected_without_proposal(tmp_path):
+    capture_path = tmp_path / "additional.json"
+    dataset_path = tmp_path / "semantic_cases.json"
+    write_json(capture_path, additional_capture())
+    dataset = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
+    next(case for case in dataset["cases"] if case["case_id"] == "AW2025-007")["review_status"] = "verified"
+    write_json(dataset_path, dataset)
+
+    with pytest.raises(prepare.GroundTruthPreparationError, match="AW2025-007"):
+        prepare.prepare_proposal(
+            capture_path,
+            dataset_path,
+            tmp_path / "output",
+            case_ids=["AW2025-007", "AW2025-008", "AW2025-010"],
+        )
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda data: data["cases"].pop(), "missing"),
+        (lambda data: data["cases"].append(data["cases"][0].copy()), "unique"),
+        (lambda data: data["cases"].__setitem__(0, {**data["cases"][0], "case_id": "AW2025-999"}), "unexpected"),
+    ],
+)
+def test_selected_additional_capture_identity_is_strict(tmp_path, mutation, message):
+    capture_data = additional_capture()
+    mutation(capture_data)
+    capture_path = tmp_path / "additional.json"
+    dataset_path = tmp_path / "semantic_cases.json"
+    write_json(capture_path, capture_data)
+    write_dataset(dataset_path)
+
+    with pytest.raises(prepare.GroundTruthPreparationError, match=message):
+        prepare.prepare_proposal(
+            capture_path,
+            dataset_path,
+            tmp_path / "output",
+            case_ids=["AW2025-007", "AW2025-008", "AW2025-010"],
+        )
 

@@ -13,13 +13,19 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scripts.capture_semantic_ground_truth import REFERENCE_CASES
+from scripts.capture_semantic_ground_truth import (
+    GroundTruthCaptureError,
+    PILOT_CASE_IDS,
+    REFERENCE_CASES,
+    REFERENCE_CASES_BY_ID,
+    select_reference_cases,
+)
 
 
 CAPTURE_SCHEMA_VERSION = 1
 PROPOSAL_SCHEMA_VERSION = 1
 EXPECTED_DATABASE = "AdventureWorks2025"
-PILOT_IDS = tuple(case["case_id"] for case in REFERENCE_CASES)
+PILOT_IDS = PILOT_CASE_IDS
 PILOT_QUESTIONS = {case["case_id"]: case["question"] for case in REFERENCE_CASES}
 PILOT_SQL = {case["case_id"]: case["sql"].strip() for case in REFERENCE_CASES}
 PILOT_COLUMNS = {
@@ -27,6 +33,15 @@ PILOT_COLUMNS = {
     "AW2025-012": ["CustomerID", "SalesOrderCount"],
 }
 PILOT_ROW_COUNTS = {"AW2025-004": 10, "AW2025-012": 109}
+
+
+def _registered_case(case_id: str) -> dict[str, Any]:
+    try:
+        return REFERENCE_CASES_BY_ID[case_id]
+    except KeyError as exc:
+        raise GroundTruthPreparationError(
+            f"Unknown registered reference case ID: {case_id}."
+        ) from exc
 
 
 class GroundTruthPreparationError(ValueError):
@@ -87,7 +102,10 @@ def _validate_tagged_value(value: Any) -> None:
     raise GroundTruthPreparationError("Unsupported captured value type.")
 
 
-def _validate_capture(capture: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _validate_capture(
+    capture: dict[str, Any],
+    selected_ids: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
     if capture.get("capture_schema_version") != CAPTURE_SCHEMA_VERSION:
         raise GroundTruthPreparationError("Unsupported capture schema version.")
     if not isinstance(capture.get("captured_at_utc"), str):
@@ -111,15 +129,18 @@ def _validate_capture(capture: dict[str, Any]) -> dict[str, dict[str, Any]]:
     ids = [case.get("case_id") for case in cases if isinstance(case, dict)]
     if len(ids) != len(cases) or len(set(ids)) != len(ids):
         raise GroundTruthPreparationError("Capture case IDs must be unique.")
-    if set(ids) != set(PILOT_IDS):
-        raise GroundTruthPreparationError("Capture contains unexpected or missing cases.")
+    if set(ids) != set(selected_ids):
+        raise GroundTruthPreparationError(
+            "Capture contains unexpected or missing selected cases."
+        )
 
     validated = {}
     for case in cases:
         case_id = case["case_id"]
-        if case.get("question") != PILOT_QUESTIONS[case_id]:
+        registered = _registered_case(case_id)
+        if case.get("question") != registered["question"]:
             raise GroundTruthPreparationError(f"Question mismatch for {case_id}.")
-        if case.get("reference_sql", "").strip() != PILOT_SQL[case_id]:
+        if case.get("reference_sql", "").strip() != registered["sql"].strip():
             raise GroundTruthPreparationError(f"Reference SQL mismatch for {case_id}.")
         result = case.get("captured_result")
         if not isinstance(result, dict):
@@ -128,12 +149,20 @@ def _validate_capture(capture: dict[str, Any]) -> dict[str, dict[str, Any]]:
             raise GroundTruthPreparationError(f"Result is truncated for {case_id}.")
         columns = result.get("columns")
         rows = result.get("rows")
-        if columns != PILOT_COLUMNS[case_id] or not isinstance(rows, list):
+        if columns != registered.get("expected_columns") and case_id in PILOT_COLUMNS:
+            expected_columns = PILOT_COLUMNS[case_id]
+        else:
+            expected_columns = registered.get("expected_columns")
+        if columns != expected_columns or not isinstance(rows, list):
             raise GroundTruthPreparationError(f"Output columns or rows are invalid for {case_id}.")
         if result.get("row_count") != len(rows):
             raise GroundTruthPreparationError(f"Row count mismatch for {case_id}.")
-        if len(rows) != PILOT_ROW_COUNTS[case_id]:
+        if case_id in PILOT_ROW_COUNTS and len(rows) != PILOT_ROW_COUNTS[case_id]:
             raise GroundTruthPreparationError(f"Unexpected row count for {case_id}.")
+        if case_id == "AW2025-010" and len(rows) != 1:
+            raise GroundTruthPreparationError(
+                "AW2025-010 must contain exactly one aggregate row."
+            )
         if case_id == "AW2025-004" and result.get("top_n_complete") is not True:
             raise GroundTruthPreparationError("AW2025-004 top-10 result is incomplete.")
         for row in rows:
@@ -145,32 +174,37 @@ def _validate_capture(capture: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return validated
 
 
-def _pilot_expectation(case: dict[str, Any]) -> dict[str, Any]:
+def _case_expectation(case: dict[str, Any]) -> dict[str, Any]:
     case_id = case["case_id"]
     result = case["captured_result"]
-    required = (
-        ["table:Production.Product"]
-        if case_id == "AW2025-004"
-        else [
-            "table:Sales.Customer",
-            "table:Sales.SalesOrderHeader",
-            "aggregate:COUNT",
-        ]
-    )
+    registered = _registered_case(case_id)
+    required = registered.get("required_sql_invariants")
+    if required is None:
+        required = (
+            ["table:Production.Product"]
+            if case_id == "AW2025-004"
+            else [
+                "table:Sales.Customer",
+                "table:Sales.SalesOrderHeader",
+                "aggregate:COUNT",
+            ]
+        )
     updated = deepcopy(case)
     updated.pop("captured_result", None)
     updated["reference_sql"] = case["reference_sql"]
     updated["expected_columns"] = result["columns"]
     updated["required_sql_invariants"] = required
-    updated["forbidden_sql_invariants"] = []
+    updated["forbidden_sql_invariants"] = registered.get("forbidden_sql_invariants", [])
     updated["expected_rows"] = result["rows"]
     updated["expected_row_count"] = result["row_count"]
-    updated["order_sensitive"] = case_id == "AW2025-004"
-    updated["numeric_tolerance"] = None
+    updated["order_sensitive"] = registered.get("order_sensitive", case_id == "AW2025-004")
+    updated["numeric_tolerance"] = registered.get("numeric_tolerance")
     updated["review_status"] = "review_required"
+    definition = registered.get("business_definition")
     updated["review_notes"] = (
         "Proposed from captured reference evidence; remains review_required until "
-        "business and database review authorizes promotion. " + case.get("ordering_policy", "")
+        "business and database review authorizes promotion. "
+        + (definition or case.get("ordering_policy", ""))
     )
     return updated
 
@@ -179,11 +213,17 @@ def prepare_proposal(
     capture_path: Path,
     dataset_path: Path,
     output_dir: Path,
+    *,
+    case_ids: tuple[str, ...] | list[str] | None = None,
 ) -> Path:
     """Create a review-only proposal without modifying the authoritative dataset."""
 
+    try:
+        selected_ids = tuple(case["case_id"] for case in select_reference_cases(case_ids))
+    except GroundTruthCaptureError as exc:
+        raise GroundTruthPreparationError(str(exc)) from exc
     capture = _load_json(capture_path)
-    validated = _validate_capture(capture)
+    validated = _validate_capture(capture, selected_ids)
     dataset = _load_json(dataset_path)
     if dataset.get("schema_version") != 1 or dataset.get("dataset_id") != "adventureworks2025-semantic-v1":
         raise GroundTruthPreparationError("Unsupported semantic dataset identity or version.")
@@ -191,10 +231,23 @@ def prepare_proposal(
     if not isinstance(cases, list) or len(cases) != 14:
         raise GroundTruthPreparationError("Authoritative dataset must contain 14 cases.")
 
+    pilot_ids = set(PILOT_IDS)
+    for case in cases:
+        if (
+            case.get("case_id") in selected_ids
+            and case.get("review_status") == "verified"
+            and case.get("case_id") not in pilot_ids
+        ):
+            raise GroundTruthPreparationError(
+                "Refusing to replace already-verified case "
+                f"{case['case_id']}; only the established pilot workflow may "
+                "produce a review proposal for a verified case."
+            )
+
     proposal_cases = []
     for case in cases:
         if case["case_id"] in validated:
-            proposal_cases.append(_pilot_expectation(validated[case["case_id"]]))
+            proposal_cases.append(_case_expectation(validated[case["case_id"]]))
         else:
             proposal_cases.append(deepcopy(case))
 
@@ -224,9 +277,15 @@ def main() -> int:
     parser.add_argument("capture_path", type=Path)
     parser.add_argument("--dataset-path", type=Path, default=Path("evaluation/semantic_cases.json"))
     parser.add_argument("--output-dir", type=Path, default=Path("reports/semantic_ground_truth/proposals"))
+    parser.add_argument("--case-id", action="append", dest="case_ids")
     args = parser.parse_args()
     try:
-        path = prepare_proposal(args.capture_path, args.dataset_path, args.output_dir)
+        path = prepare_proposal(
+            args.capture_path,
+            args.dataset_path,
+            args.output_dir,
+            case_ids=args.case_ids,
+        )
     except GroundTruthPreparationError as exc:
         print(f"Ground-truth proposal rejected: {exc}")
         return 1
