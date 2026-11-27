@@ -55,20 +55,29 @@ def result_for(case, max_rows=200, truncated=False):
     )
 
 
-def test_exactly_two_cases_are_verified_and_other_cases_remain_review_required():
+def test_exactly_five_cases_are_verified_and_other_cases_remain_review_required():
     dataset, cases = load_cases()
 
     assert dataset["schema_version"] == 1
     assert dataset["dataset_id"] == "adventureworks2025-semantic-v1"
     assert len(cases) == 14
-    assert set(case_id for case_id in cases if cases[case_id]["review_status"] == "verified") == {
+    verified_ids = {
+        case_id for case_id in cases if cases[case_id]["review_status"] == "verified"
+    }
+    assert verified_ids == {
         "AW2025-004",
+        "AW2025-007",
+        "AW2025-008",
+        "AW2025-010",
         "AW2025-012",
     }
+    assert len(verified_ids) == 5
+    assert sum(case["review_status"] == "review_required" for case in cases.values()) == 9
+    assert sum(case["review_status"] == "excluded" for case in cases.values()) == 0
     assert all(
         case["review_status"] == "review_required"
         for case_id, case in cases.items()
-        if case_id not in {"AW2025-004", "AW2025-012"}
+        if case_id not in verified_ids
     )
 
 

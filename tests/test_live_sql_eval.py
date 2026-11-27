@@ -153,9 +153,21 @@ def test_verified_cases_are_evaluated_and_remaining_cases_are_not_evaluated():
     rows = [evaluator.evaluate_response(case["question"], response(), cases) for case in cases]
 
     assert len(rows) == 14
-    assert sum(row["semantic_status"] == "fail" for row in rows) == 2
-    assert sum(row["semantic_status"] == "not_evaluated" for row in rows) == 12
+    assert [row["case_id"] for row in rows if row["review_status"] == "verified"] == [
+        "AW2025-004",
+        "AW2025-007",
+        "AW2025-008",
+        "AW2025-010",
+        "AW2025-012",
+    ]
+    assert sum(row["semantic_status"] == "fail" for row in rows) == 5
+    assert sum(row["semantic_status"] == "not_evaluated" for row in rows) == 9
     assert all(row["pipeline_success"] is True for row in rows)
+    metrics = evaluator.summary_metrics(rows)
+    assert metrics["semantic_pass_count"] == 0
+    assert metrics["semantic_fail_count"] == 5
+    assert metrics["semantic_not_evaluated_count"] == 9
+    assert metrics["semantic_accuracy"] == 0.0
 
 
 def test_verified_matching_case_passes():

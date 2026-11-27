@@ -111,15 +111,57 @@ def test_no_secrets_connection_strings_or_generated_sql_are_present():
     assert not any(pattern in raw for pattern in forbidden_patterns)
 
 
-def test_dataset_contains_only_the_two_approved_verified_cases():
+def test_dataset_contains_exactly_the_five_approved_verified_cases():
     cases = load_dataset()["cases"]
 
-    assert [case["case_id"] for case in cases if case["review_status"] == "verified"] == [
+    verified_ids = [case["case_id"] for case in cases if case["review_status"] == "verified"]
+    assert verified_ids == [
         "AW2025-004",
+        "AW2025-007",
+        "AW2025-008",
+        "AW2025-010",
         "AW2025-012",
     ]
+    assert len(cases) == 14
+    assert len(set(case["case_id"] for case in cases)) == 14
+    assert len(verified_ids) == 5
+    assert sum(case["review_status"] == "review_required" for case in cases) == 9
+    assert sum(case["review_status"] == "excluded" for case in cases) == 0
     assert all(
         case["review_status"] == "review_required"
         for case in cases
-        if case["case_id"] not in {"AW2025-004", "AW2025-012"}
+        if case["case_id"] not in set(verified_ids)
     )
+
+
+def test_first_batch_expectations_are_exact_and_order_insensitive():
+    cases = {case["case_id"]: case for case in load_dataset()["cases"]}
+    assert cases["AW2025-007"]["expected_columns"] == ["TerritoryID", "TerritoryName", "TotalSales"]
+    assert len(cases["AW2025-007"]["expected_rows"]) == 10
+    assert cases["AW2025-007"]["required_sql_invariants"] == [
+        "table:Sales.SalesOrderHeader", "table:Sales.SalesTerritory", "aggregate:SUM"
+    ]
+    assert cases["AW2025-007"]["expected_rows"][0][2] == {
+        "__type__": "decimal", "value": "18061660.3710"
+    }
+    assert cases["AW2025-008"]["expected_columns"] == ["OrderYear", "SalesOrderCount"]
+    assert cases["AW2025-008"]["expected_rows"] == [[2022, 1692], [2023, 3830], [2024, 14244], [2025, 11699]]
+    assert cases["AW2025-008"]["required_sql_invariants"] == [
+        "table:Sales.SalesOrderHeader", "aggregate:COUNT"
+    ]
+    assert cases["AW2025-010"]["expected_columns"] == ["TotalSales"]
+    assert cases["AW2025-010"]["expected_rows"] == [[
+        {"__type__": "decimal", "value": "49020486.5120"}
+    ]]
+    assert cases["AW2025-010"]["required_sql_invariants"] == [
+        "table:Sales.SalesOrderHeader", "aggregate:SUM"
+    ]
+    for case_id in ("AW2025-007", "AW2025-008", "AW2025-010"):
+        assert cases[case_id]["forbidden_sql_invariants"] == []
+        assert cases[case_id]["order_sensitive"] is False
+        assert cases[case_id]["numeric_tolerance"] is None
+
+
+def test_verified_cases_do_not_contain_proposal_only_fields():
+    for case in load_dataset()["cases"]:
+        assert not {"reference_sql", "ordering_policy", "captured_result"}.intersection(case)

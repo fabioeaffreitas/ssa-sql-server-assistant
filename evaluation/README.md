@@ -10,7 +10,7 @@ Review statuses are:
 - `verified`: reviewed expected structure and/or results are sufficient for meaningful deterministic scoring.
 - `excluded`: intentionally omitted from semantic scoring with a documented reason.
 
-The dataset now contains two reviewed cases: `AW2025-004` and `AW2025-012`. The remaining twelve cases are still `review_required`.
+The dataset contains five verified cases: `AW2025-004`, `AW2025-007`, `AW2025-008`, `AW2025-010`, and `AW2025-012`. The original reviewed pilot cases are `AW2025-004` and `AW2025-012`; the three additional reviewed cases are `AW2025-007`, `AW2025-008`, and `AW2025-010`. The remaining nine cases are still `review_required`, and no cases are excluded.
 
 `null` means the expected value is unknown and must not be interpreted as an expected empty result. An empty array is reserved for a reviewed criterion that is intentionally empty, such as no required invariants; it is not a substitute for unknown expected columns or rows.
 
@@ -23,6 +23,8 @@ The live evaluation CSV appends `case_id`, `review_status`, `pipeline_success`, 
 `review_required` and `excluded` cases produce `not_evaluated`; they are not counted as semantic failures. Semantic accuracy uses only evaluated `pass` and `fail` cases as its denominator. If no verified cases are eligible, semantic accuracy is reported as `N/A`.
 
 The verified pilot expectations come from the reviewed capture taken at `2026-11-17T10:39:19.497643+00:00` against `AdventureWorks2025` on SQL Server `17.0.1000.7`. `AW2025-004` expects ten products ordered by descending `ListPrice` with ascending `ProductID` tie-breaking, including zero-priced and discontinued products. Its money values use explicit tagged Decimal values for exact comparison.
+
+The three additional reviewed expectations come from the controlled capture taken at `2026-11-26T18:59:39.670613+00:00` against `AdventureWorks2025` on SQL Server `17.0.1000.7`. `AW2025-007` covers total territory sales, `AW2025-008` covers order counts by calendar year, and `AW2025-010` covers 2024 total sales. Their captured monetary values use explicit tagged Decimal values for exact comparison.
 
 `AW2025-012` expects 109 customers identified by `Sales.Customer.CustomerID`, using `SalesOrderHeader.SalesOrderID` counts strictly greater than 10. Its comparison is order-insensitive and uses exact integer counts. The assistant currently limits results to 100 rows, so a truncated live response for this case is `not_evaluated`, never a semantic pass.
 
@@ -45,7 +47,7 @@ For a lower-cost targeted run, select one or more stable case IDs:
 
 The runner validates the complete 14-case dataset before making any assistant request. Selected cases are executed in canonical dataset order, regardless of command-line order. Invalid, duplicate, empty, or unknown IDs fail before evaluation begins.
 
-Targeted summaries report only the selected cases and identify the run as targeted; they must not be interpreted as full-suite accuracy. `AW2025-004` is the first eligible live semantic pilot. `AW2025-012` has 109 reviewed expected rows, while the active assistant result limit is 100, so truncated responses remain `not_evaluated` until an evaluation-only row-limit mechanism is available.
+Targeted summaries report only the selected cases and identify the run as targeted; they must not be interpreted as full-suite accuracy. `AW2025-004` was the first eligible live semantic pilot. `AW2025-012` has 109 reviewed expected rows, while the active assistant result limit is 100, so truncated responses remain `not_evaluated` until an evaluation-only row-limit mechanism is available.
 
 ## SQL structural invariants
 
