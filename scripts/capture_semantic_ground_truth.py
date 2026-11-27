@@ -139,6 +139,7 @@ WHERE soh.OrderDate >= CONVERT(datetime, '20240101', 112)
         "ordering_policy": "Single aggregate row; no ordering applies.",
         "top_n": None,
         "expected_columns": ["TotalSales"],
+        "expected_row_count": 1,
         "required_sql_invariants": [
             "table:Sales.SalesOrderHeader",
             "aggregate:SUM",
@@ -150,6 +151,136 @@ WHERE soh.OrderDate >= CONVERT(datetime, '20240101', 112)
             "TotalDue includes tax and freight; OrderDate uses the half-open 2024 "
             "calendar interval; all order statuses are included; no-match results "
             "preserve NULL."
+        ),
+    },
+    {
+        "case_id": "AW2025-001",
+        "question": "Show the top 10 customers by total sales.",
+        "sql": """SELECT TOP (10)
+    soh.CustomerID,
+    SUM(soh.TotalDue) AS TotalSales
+FROM Sales.SalesOrderHeader AS soh
+GROUP BY
+    soh.CustomerID
+ORDER BY
+    TotalSales DESC,
+    soh.CustomerID ASC;""",
+        "ordering_policy": "Deterministic ranked reference result; semantic comparison is order-sensitive.",
+        "top_n": 10,
+        "expected_columns": ["CustomerID", "TotalSales"],
+        "expected_row_count": 10,
+        "required_sql_invariants": [
+            "table:Sales.SalesOrderHeader", "aggregate:SUM", "top:10"
+        ],
+        "forbidden_sql_invariants": [],
+        "order_sensitive": True,
+        "numeric_tolerance": None,
+        "business_definition": (
+            "Total sales means TotalDue, including tax and freight. Include all "
+            "order statuses and customers represented by recorded orders. Customer "
+            "identity is CustomerID; customer names are not required. Rank by total "
+            "sales descending, with CustomerID ascending as the deterministic tie-breaker."
+        ),
+    },
+    {
+        "case_id": "AW2025-009",
+        "question": "Show the top 10 products by total quantity sold.",
+        "sql": """SELECT TOP (10)
+    p.ProductID,
+    p.Name,
+    SUM(CONVERT(bigint, sod.OrderQty)) AS TotalQuantity
+FROM Sales.SalesOrderDetail AS sod
+INNER JOIN Production.Product AS p
+    ON p.ProductID = sod.ProductID
+GROUP BY
+    p.ProductID,
+    p.Name
+ORDER BY
+    TotalQuantity DESC,
+    p.ProductID ASC;""",
+        "ordering_policy": "Deterministic ranked reference result; semantic comparison is order-sensitive.",
+        "top_n": 10,
+        "expected_columns": ["ProductID", "Name", "TotalQuantity"],
+        "expected_row_count": 10,
+        "required_sql_invariants": [
+            "table:Sales.SalesOrderDetail", "table:Production.Product",
+            "aggregate:SUM", "top:10"
+        ],
+        "forbidden_sql_invariants": [],
+        "order_sensitive": True,
+        "numeric_tolerance": None,
+        "business_definition": (
+            "Product identity is ProductID. Include product name. Total quantity is "
+            "the sum of recorded OrderQty values across all order-detail rows, "
+            "regardless of order status. Convert OrderQty to bigint before aggregation "
+            "to avoid the ordinary int aggregation limit. Rank by total quantity "
+            "descending, with ProductID ascending as the deterministic tie-breaker."
+        ),
+    },
+    {
+        "case_id": "AW2025-011",
+        "question": "Show the top 5 products by total sales.",
+        "sql": """SELECT TOP (5)
+    p.ProductID,
+    p.Name,
+    SUM(sod.LineTotal) AS TotalSales
+FROM Sales.SalesOrderDetail AS sod
+INNER JOIN Production.Product AS p
+    ON p.ProductID = sod.ProductID
+GROUP BY
+    p.ProductID,
+    p.Name
+ORDER BY
+    TotalSales DESC,
+    p.ProductID ASC;""",
+        "ordering_policy": "Deterministic ranked reference result; semantic comparison is order-sensitive.",
+        "top_n": 5,
+        "expected_columns": ["ProductID", "Name", "TotalSales"],
+        "expected_row_count": 5,
+        "required_sql_invariants": [
+            "table:Sales.SalesOrderDetail", "table:Production.Product",
+            "aggregate:SUM", "top:5"
+        ],
+        "forbidden_sql_invariants": [],
+        "order_sensitive": True,
+        "numeric_tolerance": None,
+        "business_definition": (
+            "Product-level sales means the sum of Sales.SalesOrderDetail.LineTotal, "
+            "representing recorded line amounts after applicable line discounts. Do "
+            "not allocate header-level tax or freight to products. Include all "
+            "recorded order-detail rows regardless of order status. Rank by total sales "
+            "descending, with ProductID ascending as the deterministic tie-breaker. "
+            "The metadata describes the LineTotal expression but does not independently "
+            "establish its executable computed-column definition."
+        ),
+    },
+    {
+        "case_id": "AW2025-014",
+        "question": "Show total sales by month.",
+        "sql": """SELECT
+    DATEPART(YEAR, soh.OrderDate) AS OrderYear,
+    DATEPART(MONTH, soh.OrderDate) AS OrderMonth,
+    SUM(soh.TotalDue) AS TotalSales
+FROM Sales.SalesOrderHeader AS soh
+GROUP BY
+    DATEPART(YEAR, soh.OrderDate),
+    DATEPART(MONTH, soh.OrderDate)
+ORDER BY
+    OrderYear ASC,
+    OrderMonth ASC;""",
+        "ordering_policy": "Deterministic chronological reference result; semantic comparison is order-sensitive.",
+        "top_n": None,
+        "expected_columns": ["OrderYear", "OrderMonth", "TotalSales"],
+        "required_sql_invariants": ["table:Sales.SalesOrderHeader", "aggregate:SUM"],
+        "forbidden_sql_invariants": [],
+        "order_sensitive": True,
+        "numeric_tolerance": None,
+        "business_definition": (
+            "Group by distinct calendar year and month derived from OrderDate. Total "
+            "sales means TotalDue, including tax and freight. Include all order statuses "
+            "and represented calendar months only; do not fabricate missing months or "
+            "combine the same month across different years. Order chronologically by year "
+            "and month."
         ),
     },
 )
@@ -215,9 +346,15 @@ def _capture_query(cursor: Any, case: dict[str, Any]) -> dict[str, Any]:
         raise GroundTruthCaptureError(
             f"{case['case_id']} returned unexpected columns."
         )
-    if case["case_id"] == "AW2025-010" and len(rows) != 1:
+    expected_row_count = case.get("expected_row_count")
+    if expected_row_count is not None and len(rows) != expected_row_count:
+        if case["case_id"] == "AW2025-010":
+            raise GroundTruthCaptureError(
+                "AW2025-010 must return exactly one aggregate row."
+            )
         raise GroundTruthCaptureError(
-            "AW2025-010 must return exactly one aggregate row."
+            f"{case['case_id']} returned {len(rows)} rows; expected "
+            f"exactly {expected_row_count}."
         )
     serialized_rows = [
         [_json_value(value) for value in row]

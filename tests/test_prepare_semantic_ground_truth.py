@@ -97,7 +97,7 @@ def make_proposal(tmp_path):
     dataset_path = tmp_path / "semantic_cases.json"
     output_dir = tmp_path / "proposals"
     write_json(capture_path, synthetic_capture())
-    write_dataset(dataset_path)
+    write_pre_promotion_dataset(dataset_path)
     output_path = prepare.prepare_proposal(capture_path, dataset_path, output_dir)
     return json.loads(output_path.read_text(encoding="utf-8")), output_path
 
@@ -135,8 +135,41 @@ def additional_capture():
     }
 
 
+def second_batch_capture():
+    rows_by_id = {
+        "AW2025-001": [[1, {"__type__": "decimal", "value": "1.0000"}]] * 10,
+        "AW2025-009": [[1, "Widget", 2147483648]] * 10,
+        "AW2025-011": [[1, "Widget", {"__type__": "decimal", "value": "1.234567"}]] * 5,
+        "AW2025-014": [[2024, 1, {"__type__": "decimal", "value": "1.0000"}]],
+    }
+    cases = []
+    for case_id, rows in rows_by_id.items():
+        registered = prepare.REFERENCE_CASES_BY_ID[case_id]
+        cases.append({
+            "case_id": case_id,
+            "question": registered["question"],
+            "reference_sql": registered["sql"],
+            "ordering_policy": registered["ordering_policy"],
+            "captured_result": {
+                "columns": registered["expected_columns"],
+                "rows": rows,
+                "row_count": len(rows),
+                "truncated": False,
+                "top_n_complete": registered["top_n"] is not None,
+            },
+        })
+    return {
+        "capture_schema_version": 1,
+        "captured_at_utc": "2026-11-17T10:39:19+00:00",
+        "database": {"database_name": "AdventureWorks2025", "sql_server_version": "17.0.1000.7"},
+        "cases": cases,
+    }
+
+
 def test_valid_capture_prepares_both_pilot_expectations(tmp_path):
-    original = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
+    original_path = tmp_path / "expected_pre_promotion_dataset.json"
+    write_pre_promotion_dataset(original_path)
+    original = json.loads(original_path.read_text(encoding="utf-8"))
     proposal, output_path = make_proposal(tmp_path)
     cases = {case["case_id"]: case for case in proposal["dataset"]["cases"]}
 
@@ -246,7 +279,7 @@ def test_invalid_capture_evidence_fails_closed(tmp_path, mutator, message):
     capture_path = tmp_path / "capture.json"
     dataset_path = tmp_path / "semantic_cases.json"
     write_json(capture_path, capture_data)
-    write_dataset(dataset_path)
+    write_pre_promotion_dataset(dataset_path)
 
     with pytest.raises(prepare.GroundTruthPreparationError, match=message):
         prepare.prepare_proposal(capture_path, dataset_path, tmp_path / "output")
@@ -275,7 +308,9 @@ def test_case_identity_is_strictly_validated(tmp_path, mutation, message):
 
 
 def test_unselected_cases_remain_unchanged_and_statuses_are_not_promoted(tmp_path):
-    original = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
+    original_path = tmp_path / "expected_pre_promotion_dataset.json"
+    write_pre_promotion_dataset(original_path)
+    original = json.loads(original_path.read_text(encoding="utf-8"))
     proposal, _ = make_proposal(tmp_path)
     original_cases = {case["case_id"]: case for case in original["cases"]}
     proposal_cases = {case["case_id"]: case for case in proposal["dataset"]["cases"]}
@@ -356,7 +391,7 @@ def test_aw2025_010_multiple_rows_are_rejected_in_proposal_evidence(tmp_path):
     capture_path = tmp_path / "additional.json"
     dataset_path = tmp_path / "semantic_cases.json"
     write_json(capture_path, capture_data)
-    write_dataset(dataset_path)
+    write_pre_promotion_dataset(dataset_path)
 
     with pytest.raises(prepare.GroundTruthPreparationError, match="exactly one aggregate row"):
         prepare.prepare_proposal(
@@ -368,15 +403,29 @@ def test_aw2025_010_multiple_rows_are_rejected_in_proposal_evidence(tmp_path):
     assert not (tmp_path / "output").exists()
 
 
-@pytest.mark.parametrize("case_id", ["AW2025-007", "AW2025-008", "AW2025-010"])
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "AW2025-001", "AW2025-007", "AW2025-008", "AW2025-009",
+        "AW2025-010", "AW2025-011", "AW2025-014",
+    ],
+)
 def test_selected_verified_nonpilot_case_is_rejected_without_proposal(tmp_path, case_id):
     original_dataset = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
     capture_path = tmp_path / "additional.json"
     dataset_path = tmp_path / "semantic_cases.json"
     capture_data = additional_capture()
+    capture_data["cases"].extend(
+        case for case in second_batch_capture()["cases"]
+        if case["case_id"] not in {item["case_id"] for item in capture_data["cases"]}
+    )
     capture_data["cases"] = [
         case for case in capture_data["cases"] if case["case_id"] == case_id
     ]
+    verified_case = next(
+        case for case in original_dataset["cases"] if case["case_id"] == case_id
+    )
+    verified_case["review_status"] = "verified"
     write_json(capture_path, capture_data)
     write_json(dataset_path, original_dataset)
 
@@ -389,6 +438,47 @@ def test_selected_verified_nonpilot_case_is_rejected_without_proposal(tmp_path, 
         )
     assert not (tmp_path / "output").exists()
     assert json.loads(dataset_path.read_text(encoding="utf-8")) == original_dataset
+
+
+@pytest.mark.parametrize(
+    "case_id, row_count, expected_success",
+    [
+        ("AW2025-001", 9, False),
+        ("AW2025-001", 10, True),
+        ("AW2025-001", 11, False),
+        ("AW2025-009", 9, False),
+        ("AW2025-009", 10, True),
+        ("AW2025-009", 11, False),
+        ("AW2025-011", 4, False),
+        ("AW2025-011", 5, True),
+        ("AW2025-011", 6, False),
+    ],
+)
+def test_ranked_second_batch_proposal_requires_exact_top_count(
+    tmp_path, case_id, row_count, expected_success
+):
+    capture_data = second_batch_capture()
+    selected = next(case for case in capture_data["cases"] if case["case_id"] == case_id)
+    selected["captured_result"]["rows"] = selected["captured_result"]["rows"][:row_count]
+    selected["captured_result"]["row_count"] = row_count
+    capture_data["cases"] = [selected]
+    capture_path = tmp_path / "second.json"
+    dataset_path = tmp_path / "semantic_cases.json"
+    output_dir = tmp_path / "output"
+    write_json(capture_path, capture_data)
+    write_pre_promotion_dataset(dataset_path)
+
+    if expected_success:
+        output_path = prepare.prepare_proposal(
+            capture_path, dataset_path, output_dir, case_ids=[case_id]
+        )
+        assert output_path.exists()
+    else:
+        with pytest.raises(prepare.GroundTruthPreparationError, match=case_id):
+            prepare.prepare_proposal(
+                capture_path, dataset_path, output_dir, case_ids=[case_id]
+            )
+        assert not output_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -414,4 +504,30 @@ def test_selected_additional_capture_identity_is_strict(tmp_path, mutation, mess
             tmp_path / "output",
             case_ids=["AW2025-007", "AW2025-008", "AW2025-010"],
         )
+
+
+def test_selected_second_batch_cases_prepare_review_only_expectations(tmp_path):
+    capture_path = tmp_path / "second.json"
+    dataset_path = tmp_path / "semantic_cases.json"
+    write_json(capture_path, second_batch_capture())
+    write_dataset(dataset_path)
+    original = json.loads(dataset_path.read_text(encoding="utf-8"))
+
+    output_path = prepare.prepare_proposal(
+        capture_path,
+        dataset_path,
+        tmp_path / "output",
+        case_ids=["AW2025-001", "AW2025-009", "AW2025-011", "AW2025-014"],
+    )
+    proposal = json.loads(output_path.read_text(encoding="utf-8"))
+    cases = {case["case_id"]: case for case in proposal["dataset"]["cases"]}
+    assert [cases[case_id]["review_status"] for case_id in (
+        "AW2025-001", "AW2025-009", "AW2025-011", "AW2025-014"
+    )] == ["review_required"] * 4
+    assert cases["AW2025-009"]["expected_rows"][0][2] == 2147483648
+    assert cases["AW2025-011"]["expected_rows"][0][2] == {
+        "__type__": "decimal", "value": "1.234567"
+    }
+    assert cases["AW2025-014"]["order_sensitive"] is True
+    assert json.loads(dataset_path.read_text(encoding="utf-8")) == original
 

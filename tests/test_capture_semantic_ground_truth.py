@@ -50,9 +50,21 @@ class FakeCursor:
             self._current_rows = [self.identity]
             self._identity_pending = True
             return
-        if "SalesTerritory" in sql:
+        if "SalesOrderDetail" in sql and "OrderQty" in sql:
+            self.description = [("ProductID",), ("Name",), ("TotalQuantity",)]
+            self._current_rows = self.case_results.get("AW2025-009", [])
+            return
+        elif "SalesOrderDetail" in sql and "LineTotal" in sql:
+            self.description = [("ProductID",), ("Name",), ("TotalSales",)]
+            self._current_rows = self.case_results.get("AW2025-011", [])
+            return
+        elif "SalesTerritory" in sql:
             self.description = [("TerritoryID",), ("TerritoryName",), ("TotalSales",)]
             self._current_rows = self.case_results.get("AW2025-007", [])
+            return
+        elif "DATEPART(MONTH" in sql:
+            self.description = [("OrderYear",), ("OrderMonth",), ("TotalSales",)]
+            self._current_rows = self.case_results.get("AW2025-014", [])
             return
         elif "DATEPART(YEAR" in sql:
             self.description = [("OrderYear",), ("SalesOrderCount",)]
@@ -61,6 +73,10 @@ class FakeCursor:
         elif "20240101" in sql:
             self.description = [("TotalSales",)]
             self._current_rows = self.case_results.get("AW2025-010", [])
+            return
+        elif "SUM(soh.TotalDue)" in sql:
+            self.description = [("CustomerID",), ("TotalSales",)]
+            self._current_rows = self.case_results.get("AW2025-001", [])
             return
         elif len(self.executed) == 2:
             self.description = [("ProductID",), ("Name",), ("ListPrice",)]
@@ -112,14 +128,23 @@ def test_reference_cases_are_exact_and_select_only():
         "AW2025-004",
         "AW2025-012",
     )
+    assert set(capture.REFERENCE_CASES_BY_ID) == {
+        "AW2025-001", "AW2025-004", "AW2025-007", "AW2025-008",
+        "AW2025-009", "AW2025-010", "AW2025-011", "AW2025-012", "AW2025-014",
+    }
     assert [capture.REFERENCE_CASES_BY_ID[case_id]["question"] for case_id in (
-        "AW2025-004", "AW2025-012", "AW2025-007", "AW2025-008", "AW2025-010"
+        "AW2025-004", "AW2025-012", "AW2025-007", "AW2025-008", "AW2025-001",
+        "AW2025-009", "AW2025-010", "AW2025-011", "AW2025-014"
     )] == [
         "Show the 10 most expensive products by list price.",
         "Show customers with more than 10 sales orders.",
         "Show total sales by sales territory.",
         "Show the number of sales orders per year.",
+        "Show the top 10 customers by total sales.",
+        "Show the top 10 products by total quantity sold.",
         "Show total sales for orders placed in 2024.",
+        "Show the top 5 products by total sales.",
+        "Show total sales by month.",
     ]
     for case in capture.REFERENCE_CASES:
         assert validate_sql(case["sql"]) == case["sql"].strip()
@@ -139,6 +164,82 @@ def test_explicit_case_selection_is_deterministic_and_rejects_bad_ids():
     for selection, message in ((["AW2025-999"], "Unknown"), (["AW2025-007", "AW2025-007"], "Duplicate"), ([], "At least one")):
         with pytest.raises(capture.GroundTruthCaptureError, match=message):
             capture.select_reference_cases(selection)
+
+
+def test_explicit_second_batch_selection_is_supported():
+    assert [case["case_id"] for case in capture.select_reference_cases(
+        ["AW2025-014", "AW2025-001", "AW2025-011", "AW2025-009"]
+    )] == ["AW2025-014", "AW2025-001", "AW2025-011", "AW2025-009"]
+
+
+def test_second_batch_capture_preserves_shapes_decimal_and_large_integer(tmp_path, monkeypatch):
+    cursor = FakeCursor(case_results={
+        "AW2025-001": [(100, Decimal("123.4500"))] * 10,
+        "AW2025-009": [(1, "Widget", 2147483648)] * 10,
+        "AW2025-011": [(1, "Widget", Decimal("12.345678"))] * 5,
+        "AW2025-014": [(2024, 1, Decimal("1.0000")), (2024, 2, Decimal("2.0000"))],
+    })
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    path = capture.capture_ground_truth(
+        tmp_path,
+        connection_factory=lambda: FakeConnection(cursor),
+        configuration_validator=lambda: configuration(),
+        captured_at=datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc),
+        case_ids=["AW2025-001", "AW2025-009", "AW2025-011", "AW2025-014"],
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert [case["case_id"] for case in document["cases"]] == [
+        "AW2025-001", "AW2025-009", "AW2025-011", "AW2025-014"
+    ]
+    assert document["cases"][0]["captured_result"]["row_count"] == 10
+    assert document["cases"][1]["captured_result"]["rows"][0][2] == 2147483648
+    assert document["cases"][2]["captured_result"]["rows"][0][2] == {
+        "__type__": "decimal", "value": "12.345678"
+    }
+    assert document["cases"][3]["captured_result"]["row_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "case_id, row_count, expected_success",
+    [
+        ("AW2025-001", 9, False),
+        ("AW2025-001", 10, True),
+        ("AW2025-001", 11, False),
+        ("AW2025-009", 9, False),
+        ("AW2025-009", 10, True),
+        ("AW2025-009", 11, False),
+        ("AW2025-011", 4, False),
+        ("AW2025-011", 5, True),
+        ("AW2025-011", 6, False),
+    ],
+)
+def test_ranked_second_batch_requires_exact_top_count(
+    tmp_path, monkeypatch, case_id, row_count, expected_success
+):
+    row = {
+        "AW2025-001": (1, Decimal("1.0000")),
+        "AW2025-009": (1, "Widget", 1),
+        "AW2025-011": (1, "Widget", Decimal("1.000000")),
+    }[case_id]
+    cursor = FakeCursor(case_results={case_id: [row] * row_count})
+    monkeypatch.setenv("SQL_USERNAME", "SSA_ReadOnly")
+    if expected_success:
+        path = capture.capture_ground_truth(
+            tmp_path,
+            connection_factory=lambda: FakeConnection(cursor),
+            configuration_validator=lambda: configuration(),
+            case_ids=[case_id],
+        )
+        assert path.exists()
+    else:
+        with pytest.raises(capture.GroundTruthCaptureError, match=case_id):
+            capture.capture_ground_truth(
+                tmp_path,
+                connection_factory=lambda: FakeConnection(cursor),
+                configuration_validator=lambda: configuration(),
+                case_ids=[case_id],
+            )
+        assert list(tmp_path.iterdir()) == []
 
 
 def test_single_case_capture_uses_only_the_selected_registered_case(tmp_path, monkeypatch):

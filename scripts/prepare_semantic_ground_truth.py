@@ -157,14 +157,20 @@ def _validate_capture(
             raise GroundTruthPreparationError(f"Output columns or rows are invalid for {case_id}.")
         if result.get("row_count") != len(rows):
             raise GroundTruthPreparationError(f"Row count mismatch for {case_id}.")
-        if case_id in PILOT_ROW_COUNTS and len(rows) != PILOT_ROW_COUNTS[case_id]:
-            raise GroundTruthPreparationError(f"Unexpected row count for {case_id}.")
-        if case_id == "AW2025-010" and len(rows) != 1:
+        expected_row_count = registered.get("expected_row_count")
+        if expected_row_count is None:
+            expected_row_count = PILOT_ROW_COUNTS.get(case_id)
+        if expected_row_count is not None and len(rows) != expected_row_count:
+            if case_id == "AW2025-010":
+                raise GroundTruthPreparationError(
+                    "AW2025-010 must return exactly one aggregate row."
+                )
             raise GroundTruthPreparationError(
-                "AW2025-010 must contain exactly one aggregate row."
+                f"Unexpected row count for {case_id}; expected "
+                f"exactly {expected_row_count}."
             )
-        if case_id == "AW2025-004" and result.get("top_n_complete") is not True:
-            raise GroundTruthPreparationError("AW2025-004 top-10 result is incomplete.")
+        if registered.get("top_n") is not None and result.get("top_n_complete") is not True:
+            raise GroundTruthPreparationError(f"{case_id} TOP result is incomplete.")
         for row in rows:
             if not isinstance(row, list) or len(row) != len(columns):
                 raise GroundTruthPreparationError(f"Malformed row for {case_id}.")
